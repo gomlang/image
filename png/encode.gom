@@ -1,0 +1,82 @@
+package png;
+
+use ecosystem::image::{Image, Error};
+use ecosystem::compress::zlib;
+use std::bytes;
+use std::hash::crc32;
+
+fn append_chunk(
+    output: bytes::Bytes,
+    chunk_type: bytes::Bytes,
+    payload: bytes::Bytes,
+    table: crc32::Table,
+) -> () {
+    write_be32(output, payload.len().to_u32());
+    let start = output.len();
+    output.extend_from_slice(chunk_type.as_slice());
+    output.extend_from_slice(payload.as_slice());
+    write_be32(output, checksum(output, start, output.len(), table));
+}
+
+pub fn encode_with_limits(image: Image, limits: Limits, level: isize) -> Result[bytes::Bytes, Error] {
+    limits.validate()?;
+    if level < 0 || level > 9 {
+        return Result::Err(failure("PNG compression level must be 0 through 9"))
+    }
+    let bounds = image.bounds();
+    if bounds.min_x() != 0 || bounds.min_y() != 0 || bounds.is_empty() {
+        return Result::Err(failure("PNG requires a nonempty image at origin (0,0)"))
+    }
+    if image.len() > limits.max_pixels {
+        return Result::Err(failure("PNG pixel limit exceeded"))
+    }
+    let expected = bounds.height() * (1 + bounds.width() * 4);
+    if expected > limits.max_inflated_bytes {
+        return Result::Err(failure("PNG inflated byte limit exceeded"))
+    }
+    let rows = bytes::Bytes::with_capacity(expected);
+    for y in 0..bounds.height() {
+        rows.push(0);
+        for x in 0..bounds.width() {
+            let pixel = image.at(x, y).ok_or(failure("PNG image bounds changed"))?;
+            let straight = pixel.to_nrgba8();
+            rows.push(straight.red());
+            rows.push(straight.green());
+            rows.push(straight.blue());
+            rows.push(straight.alpha());
+        }
+    }
+    let compressed = zlib::encode(
+        rows,
+        compression_limits(limits, rows.len(), limits.max_compressed_bytes),
+        level,
+    ).map_err(|error| failure("PNG zlib: " + error.to_string()))?;
+    if compressed.len() > limits.max_compressed_bytes {
+        return Result::Err(failure("PNG compressed byte limit exceeded"))
+    }
+    if compressed.len() + 57 > limits.max_input_bytes {
+        return Result::Err(failure("PNG output byte limit exceeded"))
+    }
+    if limits.max_chunks < 3 {
+        return Result::Err(failure("PNG chunk limit exceeded"))
+    }
+    let result = bytes::Bytes::with_capacity(compressed.len() + 57);
+    for byte in Vec::from_array(
+        [137.to_u8(), b'P', b'N', b'G', 13.to_u8(), 10.to_u8(), 26.to_u8(), 10.to_u8()],
+    ) {
+        result.push(byte);
+    }
+    let header = bytes::Bytes::with_capacity(13);
+    write_be32(header, bounds.width().to_u32());
+    write_be32(header, bounds.height().to_u32());
+    header.push(8);
+    header.push(6);
+    header.push(0);
+    header.push(0);
+    header.push(0);
+    let table = crc32::Table::new(crc32::IEEE);
+    append_chunk(result, bytes::Bytes::from_string("IHDR"), header, table);
+    append_chunk(result, bytes::Bytes::from_string("IDAT"), compressed, table);
+    append_chunk(result, bytes::Bytes::from_string("IEND"), bytes::Bytes::new(), table);
+    Result::Ok(result)
+}

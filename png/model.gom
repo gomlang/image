@@ -1,0 +1,136 @@
+package png;
+
+use ecosystem::image::{Image, Error, Codec, MAX_PIXELS};
+use ecosystem::compress;
+use std::bytes;
+use std::hash::crc32;
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Limits {
+    pub max_input_bytes: isize,
+    pub max_pixels: isize,
+    pub max_chunks: isize,
+    pub max_compressed_bytes: isize,
+    pub max_inflated_bytes: isize,
+    pub max_work: isize,
+}
+
+impl Limits {
+    pub fn standard() -> Limits {
+        Limits {
+            max_input_bytes: 8388608,
+            max_pixels: MAX_PIXELS,
+            max_chunks: 4096,
+            max_compressed_bytes: 8388608,
+            max_inflated_bytes: 16777216,
+            max_work: 100000000,
+        }
+    }
+
+    pub fn validate(self: Limits) -> Result[(), Error] {
+        if self.max_input_bytes < 0 || self.max_pixels < 0 || self.max_pixels > MAX_PIXELS
+            || self.max_chunks < 1
+            || self.max_compressed_bytes < 0
+            || self.max_inflated_bytes < 0
+            || self.max_work < 0 {
+            return Result::Err(Error::Codec("invalid PNG limits"))
+        }
+        Result::Ok(())
+    }
+}
+
+pub struct PngCodec {
+    limits: Limits,
+    level: isize,
+}
+
+impl PngCodec {
+    pub fn new(limits: Limits, level: isize) -> Result[PngCodec, Error] {
+        limits.validate()?;
+        if level < 0 || level > 9 {
+            return Result::Err(Error::Codec("PNG compression level must be 0 through 9"))
+        }
+        Result::Ok(PngCodec { limits, level })
+    }
+
+    pub fn standard() -> PngCodec {
+        PngCodec { limits: Limits::standard(), level: 6 }
+    }
+
+    pub fn limits(self: PngCodec) -> Limits {
+        self.limits
+    }
+
+    pub fn level(self: PngCodec) -> isize {
+        self.level
+    }
+}
+
+fn failure(message: string) -> Error {
+    Error::Codec(message)
+}
+
+fn read_be32(data: bytes::Bytes, offset: isize) -> u32 {
+    (data.get(offset).to_u32() << 24) | (data.get(offset + 1).to_u32() << 16)
+        | (data.get(offset + 2).to_u32() << 8)
+        | data.get(offset + 3).to_u32()
+}
+
+fn read_be16(data: bytes::Bytes, offset: isize) -> u16 {
+    ((data.get(offset).to_u32() << 8) | data.get(offset + 1).to_u32()).to_u16()
+}
+
+fn write_be32(data: bytes::Bytes, value: u32) -> () {
+    data.push((value >> 24).to_u8());
+    data.push((value >> 16).to_u8());
+    data.push((value >> 8).to_u8());
+    data.push(value.to_u8());
+}
+
+fn chunk_type_is(data: bytes::Bytes, offset: isize, a: byte, b: byte, c: byte, d: byte) -> bool {
+    data.get(offset) == a && data.get(offset + 1) == b && data.get(offset + 2) == c
+        && data.get(offset + 3) == d
+}
+
+fn ascii_letter(value: byte) -> bool {
+    (value >= b'A' && value <= b'Z') || (value >= b'a' && value <= b'z')
+}
+
+fn valid_chunk_type(data: bytes::Bytes, offset: isize) -> bool {
+    ascii_letter(data.get(offset)) && ascii_letter(data.get(offset + 1))
+        && ascii_letter(data.get(offset + 2))
+        && ascii_letter(data.get(offset + 3))
+        && data.get(offset + 2) >= b'A'
+        && data.get(offset + 2) <= b'Z'
+}
+
+fn checksum(data: bytes::Bytes, start: isize, end: isize, table: crc32::Table) -> u32 {
+    crc32::checksum(data.slice(start, end), table)
+}
+
+fn compression_limits(limits: Limits, input: isize, output: isize) -> compress::Limits {
+    compress::Limits {
+        max_input_bytes: input,
+        max_output_bytes: output,
+        max_blocks: 1000000,
+        max_work: limits.max_work,
+    }
+}
+
+impl Codec for PngCodec {
+    fn decode(self: PngCodec, data: bytes::Bytes) -> Result[Image, Error] {
+        decode_with_limits(data, self.limits)
+    }
+
+    fn encode(self: PngCodec, image: Image) -> Result[bytes::Bytes, Error] {
+        encode_with_limits(image, self.limits, self.level)
+    }
+}
+
+pub fn decode(data: bytes::Bytes) -> Result[Image, Error] {
+    decode_with_limits(data, Limits::standard())
+}
+
+pub fn encode(image: Image) -> Result[bytes::Bytes, Error] {
+    encode_with_limits(image, Limits::standard(), 6)
+}

@@ -1,0 +1,211 @@
+package image;
+
+use ecosystem::color::{Rgba8};
+use std::bytes;
+
+pub const MAX_COORDINATE: isize = 1000000;
+
+pub const MAX_DIMENSION: isize = 4096;
+
+pub const MAX_PIXELS: isize = 1048576;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Error {
+    InvalidRectangle,
+    PixelLimit,
+    PixelCount,
+    OutOfBounds,
+    InvalidPixel,
+    Codec(string),
+}
+
+impl ToString for Error {
+    fn to_string(self: Error) -> string {
+        match self {
+            InvalidRectangle => "invalid image rectangle",
+            PixelLimit => "image pixel limit exceeded",
+            PixelCount => "image pixel count mismatch",
+            OutOfBounds => "image coordinate outside bounds",
+            InvalidPixel => "invalid premultiplied image pixel",
+            Codec(message) => "image codec: " + message,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Rect {
+    min_x: isize,
+    min_y: isize,
+    max_x: isize,
+    max_y: isize,
+}
+
+impl Rect {
+    pub fn new(min_x: isize, min_y: isize, max_x: isize, max_y: isize) -> Result[Rect, Error] {
+        if min_x < -MAX_COORDINATE || min_y < -MAX_COORDINATE || max_x > MAX_COORDINATE
+            || max_y > MAX_COORDINATE
+            || min_x > max_x
+            || min_y > max_y
+            || max_x - min_x > MAX_DIMENSION
+            || max_y - min_y > MAX_DIMENSION {
+            return Result::Err(Error::InvalidRectangle)
+        }
+        Result::Ok(Rect { min_x, min_y, max_x, max_y })
+    }
+
+    pub fn min_x(self: Rect) -> isize {
+        self.min_x
+    }
+
+    pub fn min_y(self: Rect) -> isize {
+        self.min_y
+    }
+
+    pub fn max_x(self: Rect) -> isize {
+        self.max_x
+    }
+
+    pub fn max_y(self: Rect) -> isize {
+        self.max_y
+    }
+
+    pub fn width(self: Rect) -> isize {
+        self.max_x - self.min_x
+    }
+
+    pub fn height(self: Rect) -> isize {
+        self.max_y - self.min_y
+    }
+
+    pub fn is_empty(self: Rect) -> bool {
+        self.width() == 0 || self.height() == 0
+    }
+
+    pub fn contains(self: Rect, x: isize, y: isize) -> bool {
+        x >= self.min_x && y >= self.min_y && x < self.max_x && y < self.max_y
+    }
+
+    pub fn intersection(self: Rect, other: Rect) -> Rect {
+        let min_x = if self.min_x > other.min_x {
+            self.min_x
+        } else {
+            other.min_x
+        };
+        let min_y = if self.min_y > other.min_y {
+            self.min_y
+        } else {
+            other.min_y
+        };
+        let max_x = if self.max_x < other.max_x {
+            self.max_x
+        } else {
+            other.max_x
+        };
+        let max_y = if self.max_y < other.max_y {
+            self.max_y
+        } else {
+            other.max_y
+        };
+        Rect {
+            min_x,
+            min_y,
+            max_x: if max_x < min_x {
+                min_x
+            } else {
+                max_x
+            },
+            max_y: if max_y < min_y {
+                min_y
+            } else {
+                max_y
+            },
+        }
+    }
+}
+
+pub struct Image {
+    bounds: Rect,
+    pixels: Vec[Rgba8],
+}
+
+impl Image {
+    pub fn new(bounds: Rect) -> Result[Image, Error] {
+        let transparent = Rgba8::new(0, 0, 0, 0).map_err(|_| Error::InvalidPixel)?;
+        Image::filled(bounds, transparent)
+    }
+
+    pub fn filled(bounds: Rect, color: Rgba8) -> Result[Image, Error] {
+        let count = bounds.width() * bounds.height();
+        if count > MAX_PIXELS {
+            return Result::Err(Error::PixelLimit)
+        }
+        let pixels: Vec[Rgba8] = Vec::with_capacity(count);
+        for _ in 0..count {
+            pixels.push(color);
+        }
+        Result::Ok(Image { bounds, pixels })
+    }
+
+    pub fn from_pixels(bounds: Rect, pixels: Vec[Rgba8]) -> Result[Image, Error] {
+        let count = bounds.width() * bounds.height();
+        if count > MAX_PIXELS {
+            return Result::Err(Error::PixelLimit)
+        }
+        if pixels.len() != count {
+            return Result::Err(Error::PixelCount)
+        }
+        Result::Ok(Image { bounds, pixels: pixels.copy() })
+    }
+
+    pub fn bounds(self: Image) -> Rect {
+        self.bounds
+    }
+
+    pub fn len(self: Image) -> isize {
+        self.pixels.len()
+    }
+
+    pub fn pixels(self: Image) -> Vec[Rgba8] {
+        self.pixels.copy()
+    }
+
+    pub fn snapshot(self: Image) -> Image {
+        Image { bounds: self.bounds, pixels: self.pixels.copy() }
+    }
+
+    fn index(self: Image, x: isize, y: isize) -> isize {
+        (y - self.bounds.min_y) * self.bounds.width() + (x - self.bounds.min_x)
+    }
+
+    pub fn at(self: Image, x: isize, y: isize) -> Option[Rgba8] {
+        if self.bounds.contains(x, y) {
+            Option::Some(self.pixels[self.index(x, y)])
+        } else {
+            Option::None
+        }
+    }
+
+    pub fn set(self: Image, x: isize, y: isize, color: Rgba8) -> Result[(), Error] {
+        if !self.bounds.contains(x, y) {
+            return Result::Err(Error::OutOfBounds)
+        }
+        self.pixels[self.index(x, y)] = color;
+        Result::Ok(())
+    }
+
+    pub fn subimage(self: Image, region: Rect) -> Result[Image, Error] {
+        let bounds = self.bounds.intersection(region);
+        let pixels: Vec[Rgba8] = Vec::with_capacity(bounds.width() * bounds.height());
+        for y in bounds.min_y..bounds.max_y {
+            for x in bounds.min_x..bounds.max_x {
+                pixels.push(self.pixels[self.index(x, y)]);
+            }
+        }
+        Result::Ok(Image { bounds, pixels })
+    }
+}
+
+pub trait Codec {
+    fn decode(self: Self, data: bytes::Bytes) -> Result[Image, Error];
+    fn encode(self: Self, image: Image) -> Result[bytes::Bytes, Error];
+}
