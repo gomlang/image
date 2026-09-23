@@ -1,0 +1,6 @@
+[module]
+path = "ecosystem::consumers::image"
+
+[dependencies]
+"ecosystem::image" = "0.1.0"
+"ecosystem::color" = "0.1.0"

@@ -1,0 +1,30 @@
+package main;
+
+use ecosystem::image::{Rect, Image, Codec, RawRgbaCodec};
+use ecosystem::image::draw;
+use ecosystem::image::png;
+use ecosystem::color::{Rgba8};
+use std::testing;
+
+pub fn exercise() -> () {
+    let bounds = testing::expect_ok(Rect::new(0, 0, 2, 1), "bounds");
+    let background = testing::expect_ok(Rgba8::new(0, 0, 255, 255), "background");
+    let foreground = testing::expect_ok(Rgba8::new(128, 0, 0, 128), "foreground");
+    let canvas = testing::expect_ok(Image::filled(bounds, background), "canvas");
+    let source = testing::expect_ok(Image::filled(bounds, foreground), "source");
+    testing::assert_eq(testing::expect_ok(draw::over(canvas, bounds, source, (0, 0)), "over"), 2);
+    let encoded = testing::expect_ok(RawRgbaCodec::new().encode(canvas), "encode");
+    let decoded = testing::expect_ok(RawRgbaCodec::new().decode(encoded), "decode");
+    testing::assert(
+        decoded.at(0, 0)
+            == Option::Some(testing::expect_ok(Rgba8::new(128, 0, 127, 255), "blended")),
+    );
+    let png_wire = testing::expect_ok(png::encode(canvas), "PNG encode");
+    let png_image = testing::expect_ok(png::decode(png_wire), "PNG decode");
+    testing::assert(png_image.at(0, 0) == decoded.at(0, 0));
+}
+
+fn main() -> () {
+    exercise();
+    println("image consumer: clipped premultiplied draw and raw codec ok");
+}
