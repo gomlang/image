@@ -1,0 +1,67 @@
+package tests;
+
+use ecosystem::image::{Rect, Image};
+use ecosystem::image::draw;
+use ecosystem::color::{Rgba8};
+use std::testing;
+
+fn pixel(red: u8, green: u8, blue: u8, alpha: u8) -> Rgba8 {
+    testing::expect_ok(Rgba8::new(red, green, blue, alpha), "pixel")
+}
+
+fn rect(min_x: isize, min_y: isize, max_x: isize, max_y: isize) -> Rect {
+    testing::expect_ok(Rect::new(min_x, min_y, max_x, max_y), "rectangle")
+}
+
+#[test]
+fn clipped_copy_maps_source_origin_and_counts_written_pixels() -> () {
+    let destination = testing::expect_ok(Image::new(rect(0, 0, 3, 3)), "destination");
+    let source = testing::expect_ok(
+        Image::filled(rect(0, 0, 2, 2), pixel(255, 0, 0, 255)),
+        "source",
+    );
+    let count = testing::expect_ok(
+        draw::copy(destination, rect(1, 1, 4, 4), source, (-1, -1)),
+        "copy",
+    );
+    testing::assert_eq(count, 1);
+    testing::assert(destination.at(2, 2) == Option::Some(pixel(255, 0, 0, 255)));
+    testing::assert(destination.at(1, 1) == Option::Some(pixel(0, 0, 0, 0)));
+    testing::assert_err(draw::copy(destination, rect(0, 0, 1, 1), source, (1000001, 0)));
+}
+
+#[test]
+fn over_blends_encoded_premultiplied_channels() -> () {
+    let destination = testing::expect_ok(
+        Image::filled(rect(0, 0, 1, 1), pixel(0, 0, 255, 255)),
+        "destination",
+    );
+    let source = testing::expect_ok(
+        Image::filled(rect(0, 0, 1, 1), pixel(128, 0, 0, 128)),
+        "source",
+    );
+    testing::assert_eq(
+        testing::expect_ok(draw::over(destination, rect(0, 0, 1, 1), source, (0, 0)), "over"),
+        1,
+    );
+    testing::assert(destination.at(0, 0) == Option::Some(pixel(128, 0, 127, 255)));
+    let transparent = testing::expect_ok(Image::new(rect(0, 0, 1, 1)), "transparent");
+    testing::assert_ok(draw::over(destination, rect(0, 0, 1, 1), transparent, (0, 0)));
+    testing::assert(destination.at(0, 0) == Option::Some(pixel(128, 0, 127, 255)));
+    testing::assert_ok(draw::copy(destination, rect(0, 0, 1, 1), transparent, (0, 0)));
+    testing::assert(destination.at(0, 0) == Option::Some(pixel(0, 0, 0, 0)));
+}
+
+#[test]
+fn overlapping_self_copy_reads_original_source_pixels() -> () {
+    let image = testing::expect_ok(Image::new(rect(0, 0, 3, 1)), "image");
+    testing::assert_ok(image.set(0, 0, pixel(255, 0, 0, 255)));
+    testing::assert_ok(image.set(1, 0, pixel(0, 255, 0, 255)));
+    testing::assert_ok(image.set(2, 0, pixel(0, 0, 255, 255)));
+    testing::assert_eq(
+        testing::expect_ok(draw::copy(image, rect(1, 0, 3, 1), image, (0, 0)), "self copy"),
+        2,
+    );
+    testing::assert(image.at(1, 0) == Option::Some(pixel(255, 0, 0, 255)));
+    testing::assert(image.at(2, 0) == Option::Some(pixel(0, 255, 0, 255)));
+}

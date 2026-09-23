@@ -1,0 +1,158 @@
+package tests;
+
+use ecosystem::image::{Image, Rect, Codec};
+use ecosystem::image::png;
+use ecosystem::image::png::{Limits, PngCodec};
+use ecosystem::color::{Rgba8};
+use std::bytes;
+use std::fs;
+use std::testing;
+
+fn fixture(name: string) -> bytes::Bytes {
+    testing::expect_ok(fs::read_bytes_structured("png/tests/data/" + name + ".png"), "fixture")
+}
+
+fn pixel(red: u8, green: u8, blue: u8, alpha: u8) -> Rgba8 {
+    testing::expect_ok(Rgba8::new(red, green, blue, alpha), "pixel")
+}
+
+fn at(image: Image, x: isize, y: isize) -> Rgba8 {
+    testing::expect_some(image.at(x, y), "decoded pixel")
+}
+
+#[test]
+fn decodes_all_standard_color_types_and_depths() -> () {
+    let gray1 = testing::expect_ok(png::decode(fixture("gray1")), "gray1");
+    testing::assert_eq(at(gray1, 0, 0), pixel(0, 0, 0, 255));
+    testing::assert_eq(at(gray1, 1, 0), pixel(255, 255, 255, 255));
+    let gray2 = testing::expect_ok(png::decode(fixture("gray2")), "gray2");
+    testing::assert_eq(at(gray2, 0, 0), pixel(85, 85, 85, 255));
+    testing::assert_eq(at(gray2, 1, 0), pixel(170, 170, 170, 255));
+    let gray4 = testing::expect_ok(png::decode(fixture("gray4")), "gray4");
+    testing::assert_eq(at(gray4, 0, 0), pixel(34, 34, 34, 255));
+    testing::assert_eq(at(gray4, 1, 0), pixel(221, 221, 221, 255));
+    let gray8 = testing::expect_ok(png::decode(fixture("gray8")), "gray8");
+    testing::assert_eq(at(gray8, 0, 0), pixel(0, 0, 0, 0));
+    testing::assert_eq(at(gray8, 1, 0), pixel(190, 190, 190, 255));
+    let gray16 = testing::expect_ok(png::decode(fixture("gray16")), "gray16");
+    testing::assert_eq(at(gray16, 0, 0), pixel(0, 0, 0, 0));
+    testing::assert_eq(at(gray16, 1, 0), pixel(1, 1, 1, 255));
+    let rgb8 = testing::expect_ok(png::decode(fixture("rgb8")), "rgb8");
+    testing::assert_eq(at(rgb8, 0, 0), pixel(0, 0, 0, 0));
+    testing::assert_eq(at(rgb8, 1, 0), pixel(200, 100, 50, 255));
+    let rgb16 = testing::expect_ok(png::decode(fixture("rgb16")), "rgb16");
+    testing::assert_eq(at(rgb16, 0, 0), pixel(18, 86, 171, 255));
+    let indexed1 = testing::expect_ok(png::decode(fixture("indexed1")), "indexed1");
+    testing::assert_eq(at(indexed1, 0, 0), pixel(0, 0, 0, 0));
+    testing::assert_eq(at(indexed1, 1, 0), pixel(1, 127, 0, 128));
+    for name in Vec::from_array(["indexed2", "indexed4", "indexed8"]) {
+        let image = testing::expect_ok(png::decode(fixture(name)), name);
+        testing::assert_eq(at(image, 0, 0), pixel(0, 0, 0, 0));
+        testing::assert_eq(at(image, 1, 0).alpha(), 255);
+    }
+    testing::assert_eq(
+        at(testing::expect_ok(png::decode(fixture("gray_alpha8")), "gray alpha8"), 0, 0),
+        pixel(100, 100, 100, 128),
+    );
+    testing::assert_eq(
+        at(testing::expect_ok(png::decode(fixture("gray_alpha16")), "gray alpha16"), 0, 0),
+        pixel(64, 64, 64, 128),
+    );
+    testing::assert_eq(
+        at(testing::expect_ok(png::decode(fixture("rgba8")), "rgba8"), 0, 0),
+        pixel(128, 0, 0, 128),
+    );
+    testing::assert_eq(
+        at(testing::expect_ok(png::decode(fixture("rgba16")), "rgba16"), 0, 0),
+        pixel(128, 0, 0, 128),
+    );
+}
+
+#[test]
+fn reconstructs_all_filters_and_adam7_passes() -> () {
+    for mode in 0..5 {
+        let image = testing::expect_ok(png::decode(fixture("filter" + mode.to_string())), "filter");
+        testing::assert_eq(at(image, 0, 0), pixel(255, 0, 0, 255));
+        testing::assert_eq(at(image, 1, 0), pixel(0, 255, 0, 255));
+        testing::assert_eq(at(image, 0, 1), pixel(0, 0, 255, 255));
+        testing::assert_eq(at(image, 1, 1), pixel(64, 0, 0, 128));
+    }
+    let image = testing::expect_ok(png::decode(fixture("adam7")), "Adam7");
+    testing::assert_eq(image.bounds(), testing::expect_ok(Rect::new(0, 0, 8, 8), "bounds"));
+    testing::assert_eq(at(image, 0, 0), pixel(0, 0, 0, 255));
+    testing::assert_eq(at(image, 4, 0), pixel(128, 0, 0, 255));
+    testing::assert_eq(at(image, 7, 7), pixel(224, 224, 0, 255));
+}
+
+#[test]
+fn encoder_roundtrips_premultiplied_pixels_and_codec_trait() -> () {
+    let image = testing::expect_ok(
+        Image::new(testing::expect_ok(Rect::new(0, 0, 2, 1), "bounds")),
+        "image",
+    );
+    testing::assert_ok(image.set(0, 0, pixel(128, 0, 0, 128)));
+    testing::assert_ok(image.set(1, 0, pixel(0, 50, 100, 255)));
+    let codec = PngCodec::standard();
+    let encoded = testing::expect_ok(codec.encode(image), "encode");
+    let decoded = testing::expect_ok(codec.decode(encoded), "decode");
+    testing::assert_eq(at(decoded, 0, 0), pixel(128, 0, 0, 128));
+    testing::assert_eq(at(decoded, 1, 0), pixel(0, 50, 100, 255));
+    testing::assert_eq(encoded.get(0), 137.to_u8());
+}
+
+#[test]
+fn crc_chunk_order_data_lengths_and_budgets_fail_closed() -> () {
+    let original = fixture("rgba8");
+    let crc_corrupt = original.copy();
+    crc_corrupt.set(29, crc_corrupt.get(29) ^ 1);
+    testing::assert_err(png::decode(crc_corrupt));
+    let truncated = original.copy();
+    truncated.truncate(truncated.len() - 1);
+    testing::assert_err(png::decode(truncated));
+    let trailing = original.copy();
+    trailing.push(0);
+    testing::assert_err(png::decode(trailing));
+    let invalid_signature = original.copy();
+    invalid_signature.set(0, 0);
+    testing::assert_err(png::decode(invalid_signature));
+    let mut limits = Limits::standard();
+    limits.max_input_bytes = original.len() - 1;
+    testing::assert_err(png::decode_with_limits(original, limits));
+    limits = Limits::standard();
+    limits.max_chunks = 2;
+    testing::assert_err(png::decode_with_limits(original, limits));
+    limits = Limits::standard();
+    limits.max_pixels = 0;
+    testing::assert_err(png::decode_with_limits(original, limits));
+    limits = Limits::standard();
+    limits.max_inflated_bytes = 4;
+    testing::assert_err(png::decode_with_limits(original, limits));
+    testing::assert_err(PngCodec::new(Limits::standard(), 10));
+}
+
+#[test]
+fn validates_split_idat_unknown_chunks_and_pixel_indexes() -> () {
+    let split = testing::expect_ok(png::decode(fixture("split_idat")), "split IDAT");
+    testing::assert_eq(at(split, 0, 0), pixel(255, 0, 0, 255));
+    for name in Vec::from_array(
+        [
+            "duplicate_ihdr",
+            "unknown_critical",
+            "noncontiguous_idat",
+            "bad_filter",
+            "bad_palette_index",
+        ],
+    ) {
+        testing::assert_err(png::decode(fixture(name)));
+    }
+    let original = fixture("rgba8");
+    let bad_crc = original.copy();
+    bad_crc.set(bad_crc.len() - 1, bad_crc.get(bad_crc.len() - 1) ^ 1);
+    testing::assert_err(png::decode(bad_crc));
+    let mut limits = Limits::standard();
+    limits.max_compressed_bytes = 1;
+    testing::assert_err(png::decode_with_limits(original, limits));
+    limits = Limits::standard();
+    limits.max_work = 0;
+    testing::assert_err(png::decode_with_limits(original, limits));
+}

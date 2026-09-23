@@ -1,0 +1,72 @@
+package tests;
+
+use ecosystem::image::{Rect, Image, Codec, RawRgbaCodec};
+use ecosystem::color::{Rgba8};
+use std::bytes;
+use std::testing;
+
+fn pixel(red: u8, green: u8, blue: u8, alpha: u8) -> Rgba8 {
+    testing::expect_ok(Rgba8::new(red, green, blue, alpha), "pixel")
+}
+
+fn rect(min_x: isize, min_y: isize, max_x: isize, max_y: isize) -> Rect {
+    testing::expect_ok(Rect::new(min_x, min_y, max_x, max_y), "rectangle")
+}
+
+#[test]
+fn rectangle_validation_intersection_and_empty_bounds() -> () {
+    testing::assert_err(Rect::new(2, 0, 1, 1));
+    testing::assert_err(Rect::new(-1000001, 0, 0, 1));
+    testing::assert_err(Rect::new(0, 0, 4097, 1));
+    let first = rect(-2, -2, 2, 2);
+    let overlap = first.intersection(rect(1, 1, 3, 3));
+    testing::assert_eq(overlap, rect(1, 1, 2, 2));
+    testing::assert(first.contains(-2, -2));
+    testing::assert(!first.contains(2, 2));
+    testing::assert(first.intersection(rect(3, 3, 4, 4)).is_empty());
+}
+
+#[test]
+fn pixel_buffers_snapshot_input_and_subimages() -> () {
+    testing::assert_err(Image::new(rect(0, 0, 4096, 4096)));
+    testing::assert_err(Image::from_pixels(rect(0, 0, 2, 1), Vec::from_array([pixel(0, 0, 0, 0)])));
+    let data = Vec::from_array([pixel(255, 0, 0, 255), pixel(0, 255, 0, 255)]);
+    let image = testing::expect_ok(Image::from_pixels(rect(-1, 3, 1, 4), data), "image");
+    data[0] = pixel(0, 0, 255, 255);
+    testing::assert(image.at(-1, 3) == Option::Some(pixel(255, 0, 0, 255)));
+    testing::assert(image.at(1, 3) == Option::None);
+    testing::assert_err(image.set(1, 3, pixel(0, 0, 0, 0)));
+    let crop = testing::expect_ok(image.subimage(rect(0, 3, 2, 4)), "crop");
+    testing::assert_eq(crop.bounds(), rect(0, 3, 1, 4));
+    testing::assert_eq(crop.len(), 1);
+    testing::assert_ok(image.set(0, 3, pixel(0, 0, 255, 255)));
+    testing::assert(crop.at(0, 3) == Option::Some(pixel(0, 255, 0, 255)));
+    let outside = testing::expect_ok(image.subimage(rect(3, 3, 4, 4)), "empty crop");
+    testing::assert_eq(outside.len(), 0);
+}
+
+#[test]
+fn raw_codec_roundtrips_and_rejects_malformed_pixels() -> () {
+    let codec = RawRgbaCodec::new();
+    let image = testing::expect_ok(Image::new(rect(0, 0, 2, 1)), "image");
+    testing::assert_ok(image.set(0, 0, pixel(128, 0, 0, 128)));
+    testing::assert_ok(image.set(1, 0, pixel(0, 0, 255, 255)));
+    let encoded = testing::expect_ok(codec.encode(image), "encode");
+    testing::assert_eq(encoded.len(), 20);
+    let decoded = testing::expect_ok(codec.decode(encoded), "decode");
+    testing::assert_eq(decoded.bounds(), image.bounds());
+    testing::assert(decoded.at(0, 0) == image.at(0, 0));
+    testing::assert(decoded.at(1, 0) == image.at(1, 0));
+    testing::assert_err(codec.decode(bytes::Bytes::from_string("R8PM")));
+    let invalid = encoded.copy();
+    invalid.set(12, 255);
+    testing::assert_err(codec.decode(invalid));
+    let truncated = encoded.copy();
+    truncated.truncate(19);
+    testing::assert_err(codec.decode(truncated));
+    let oversized = encoded.copy();
+    oversized.set(4, 255);
+    oversized.set(5, 255);
+    testing::assert_err(codec.decode(oversized));
+    testing::assert_err(codec.encode(testing::expect_ok(Image::new(rect(1, 0, 2, 1)), "offset")));
+}
