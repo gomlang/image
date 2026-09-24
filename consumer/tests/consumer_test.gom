@@ -1,0 +1,8 @@
+package tests;
+
+use ecosystem::consumers::image;
+
+#[test]
+fn uses_published_image_and_draw_packages() -> () {
+    image::exercise();
+}
