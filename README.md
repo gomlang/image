@@ -39,5 +39,5 @@ origin `(0, 0)` on encode. Decode rejects invalid dimensions, size mismatches,
 trailing data and channels above alpha before constructing an image. This is
 an internal interchange format, not PNG, JPEG or a registered media type.
 
-`just ecosystem-test image` runs library and independent consumer format,
+`(cd ../verification && just ecosystem-test image)` runs library and independent consumer format,
 build, tests, cached-build and executable checks.
