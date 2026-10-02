@@ -36,8 +36,14 @@ hidden RGB at zero alpha are lost in the resulting `Image`. For `tRNS`, the
 unscaled source sample is compared with its transparency key before rescaling.
 Metadata chunks such as `gAMA`, `iCCP`, `sRGB`, text and animation extensions
 are ignored; color values are treated as encoded sRGB bytes without color
-management. The encoder writes one noninterlaced 8-bit RGBA `IDAT` stream with
-filter type 0 for each row. It unpremultiplies pixels before writing and
+management. The encoder writes one noninterlaced 8-bit RGBA `IDAT` stream. For
+each row it tries all five PNG filters and chooses the smallest sum of absolute
+signed-byte residuals, breaking ties by the lowest filter number. This
+deterministic heuristic improves compression of smooth and repeated rows without
+changing decoded pixels; it does not guarantee the smallest compressed stream.
+Filtering uses bounded row storage and a fixed five passes per row. The
+`max_work` budget applies to zlib, while dimensions bound filter work.
+It unpremultiplies pixels before writing and
 requires a nonempty image at origin `(0, 0)`. This conversion can be lossy for
 translucent pixels.
 
