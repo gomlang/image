@@ -1,0 +1,196 @@
+package tests;
+
+use ecosystem::image::{Image, Rect, Codec};
+use ecosystem::image::png;
+use ecosystem::color::{Rgba8};
+use ecosystem::compress::zlib;
+use std::bytes;
+use std::testing;
+
+fn sample_image(gray: bool, transparent: bool) -> Image {
+    let image = testing::expect_ok(
+        Image::new(testing::expect_ok(Rect::new(0, 0, 7, 4), "bounds")),
+        "image",
+    );
+    for y in 0..4 {
+        for x in 0..7 {
+            let alpha: u8 = if transparent && (x + y) % 2 == 0 {
+                128
+            } else {
+                255
+            };
+            let red = ((x * 97 + y * 53) % (alpha.to_isize() + 1)).to_u8();
+            let green = if gray {
+                red
+            } else {
+                alpha - red
+            };
+            testing::assert_ok(
+                image.set(x, y, testing::expect_ok(Rgba8::new(red, green, red, alpha), "pixel")),
+            );
+        }
+    }
+    image
+}
+
+fn check_encoding(image: Image, encoding: png::Encoding, color_type: isize, channels: isize) -> () {
+    let policies = Vec::from_array(
+        [
+            png::Filter::None,
+            png::Filter::Sub,
+            png::Filter::Up,
+            png::Filter::Average,
+            png::Filter::Paeth,
+            png::Filter::Adaptive,
+        ],
+    );
+    for policy in 0..policies.len() {
+        let options = png::EncodeOptions { level: 6, filter: policies[policy], encoding };
+        let wire = testing::expect_ok(
+            png::encode_with_options(image, png::Limits::standard(), options),
+            "encode",
+        );
+        testing::assert_eq(wire.get(24), 8.to_u8());
+        testing::assert_eq(wire.get(25).to_isize(), color_type);
+        let size = (wire.get(33).to_isize() << 24) | (wire.get(34).to_isize() << 16)
+            | (wire.get(35).to_isize() << 8)
+            | wire.get(36).to_isize();
+        let filtered = testing::expect_ok(
+            zlib::decode(
+                bytes::Bytes::from_slice_copy(wire.slice(41, 41 + size)),
+                compression_budget(),
+            ),
+            "scanlines",
+        );
+        let width = 7 * channels;
+        let stride = 1 + width;
+        testing::assert_eq(filtered.len(), stride * 4);
+        let raw = bytes::Bytes::new();
+        for y in 0..4 {
+            let filter = filtered.get(y * stride).to_isize();
+            if policy < 5 {
+                testing::assert_eq(filter, policy);
+            } else {
+                testing::assert(filter >= 0 && filter <= 4);
+            }
+            for index in 0..width {
+                let left = if index >= channels {
+                    raw.get(y * width + index - channels).to_isize()
+                } else {
+                    0
+                };
+                let above = if y > 0 {
+                    raw.get((y - 1) * width + index).to_isize()
+                } else {
+                    0
+                };
+                let corner = if index >= channels && y > 0 {
+                    raw.get((y - 1) * width + index - channels).to_isize()
+                } else {
+                    0
+                };
+                let actual = ((filtered.get(y * stride + index + 1).to_isize()
+                    + predictor(filter, left, above, corner))
+                    & 255).to_u8();
+                let pixel = testing::expect_some(image.at(index / channels, y), "pixel").to_nrgba8();
+                let component = index % channels;
+                let expected = if color_type == 4 && component == 1
+                    || color_type == 6 && component == 3 {
+                    pixel.alpha()
+                } else if component == 1 {
+                    pixel.green()
+                } else if component == 2 {
+                    pixel.blue()
+                } else {
+                    pixel.red()
+                };
+                testing::assert_eq(actual, expected);
+                raw.push(actual);
+            }
+        }
+        let decoded = testing::expect_ok(png::decode(wire), "decode");
+        for y in 0..4 {
+            for x in 0..7 {
+                testing::assert(decoded.at(x, y) == image.at(x, y));
+            }
+        }
+        let codec = png::PngCodec::standard().with_encoding(encoding).with_filter(policies[policy]);
+        let codec_wire = testing::expect_ok(codec.encode(image), "codec options");
+        testing::assert_eq(wire.len(), codec_wire.len());
+        for index in 0..wire.len() {
+            testing::assert_eq(wire.get(index), codec_wire.get(index));
+        }
+    }
+}
+
+#[test]
+fn color_formats_and_all_filter_policies_reconstruct_independently() -> () {
+    check_encoding(sample_image(false, true), png::Encoding::Rgba8, 6, 4);
+    check_encoding(sample_image(false, false), png::Encoding::Rgb8, 2, 3);
+    check_encoding(sample_image(true, false), png::Encoding::Grayscale8, 0, 1);
+    check_encoding(sample_image(true, true), png::Encoding::GrayscaleAlpha8, 4, 2);
+}
+
+#[test]
+fn selected_formats_reject_color_loss_and_charge_encoded_channels() -> () {
+    for encoding in Vec::from_array([png::Encoding::Rgb8, png::Encoding::Grayscale8]) {
+        testing::assert_err(
+            png::encode_with_options(
+                sample_image(true, true),
+                png::Limits::standard(),
+                png::EncodeOptions { encoding, ..png::EncodeOptions::standard() },
+            ),
+        );
+    }
+    for encoding in Vec::from_array([png::Encoding::Grayscale8, png::Encoding::GrayscaleAlpha8]) {
+        testing::assert_err(
+            png::encode_with_options(
+                sample_image(false, false),
+                png::Limits::standard(),
+                png::EncodeOptions { encoding, ..png::EncodeOptions::standard() },
+            ),
+        );
+    }
+    let image = sample_image(true, false);
+    let options = png::EncodeOptions {
+        encoding: png::Encoding::Grayscale8,
+        ..png::EncodeOptions::standard(),
+    };
+    testing::assert_ok(
+        png::encode_with_options(
+            image,
+            png::Limits { max_inflated_bytes: 32, ..png::Limits::standard() },
+            options,
+        ),
+    );
+    testing::assert_err(
+        png::encode_with_options(
+            image,
+            png::Limits { max_inflated_bytes: 31, ..png::Limits::standard() },
+            options,
+        ),
+    );
+    testing::assert_err(
+        png::encode_with_options(
+            image,
+            png::Limits { max_inflated_bytes: 32, ..png::Limits::standard() },
+            png::EncodeOptions::standard(),
+        ),
+    );
+    testing::assert_err(
+        png::encode_with_options(
+            image,
+            png::Limits::standard(),
+            png::EncodeOptions { level: 10, ..options },
+        ),
+    );
+    let legacy = testing::expect_ok(png::encode(image), "legacy default");
+    let configured = testing::expect_ok(
+        png::encode_with_options(image, png::Limits::standard(), png::EncodeOptions::standard()),
+        "default options",
+    );
+    testing::assert_eq(legacy.len(), configured.len());
+    for index in 0..legacy.len() {
+        testing::assert_eq(legacy.get(index), configured.get(index));
+    }
+}
