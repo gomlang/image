@@ -44,8 +44,8 @@ translucent pixels.
 The tests use deterministic independently assembled PNG fixtures under
 [`tests/data`](tests/data/README.md), covering every accepted bit-depth/color
 type combination, filters, Adam7, transparency, chunk placement, CRC failures
-and budgets. `just ecosystem-test image` also exercises the published codec
-from an independent consumer.
+and budgets. From the library root, `(cd ../verification && just ecosystem-test image)`
+also exercises the public codec through the example and independent downstream checks.
 
 Format and decoding rules follow the [W3C PNG Specification, Third
 Edition](https://www.w3.org/TR/png-3/).
