@@ -1,0 +1,177 @@
+package tests;
+
+use ecosystem::image::{Image, Rect};
+use ecosystem::image::png;
+use ecosystem::color::{Rgba8};
+use ecosystem::compress;
+use ecosystem::compress::zlib;
+use std::bytes;
+use std::testing;
+
+fn compression_budget() -> compress::Limits {
+    compress::Limits {
+        max_input_bytes: 1048576,
+        max_output_bytes: 1048576,
+        max_blocks: 100000,
+        max_work: 10000000,
+    }
+}
+
+fn absolute(value: isize) -> isize {
+    if value < 0 {
+        -value
+    } else {
+        value
+    }
+}
+
+fn predictor(filter: isize, a: isize, b: isize, c: isize) -> isize {
+    match filter {
+        0 => 0,
+        1 => a,
+        2 => b,
+        3 => (a + b) / 2,
+        _ => {
+            let p = a + b - c;
+            let da = absolute(p - a);
+            let db = absolute(p - b);
+            let dc = absolute(p - c);
+            if da <= db && da <= dc {
+                a
+            } else if db <= dc {
+                b
+            } else {
+                c
+            }
+        },
+    }
+}
+
+#[test]
+fn adaptive_filters_reconstruct_independently_and_reduce_gradient_size() -> () {
+    let width = 96;
+    let height = 64;
+    let image = testing::expect_ok(
+        Image::new(testing::expect_ok(Rect::new(0, 0, width, height), "bounds")),
+        "image",
+    );
+    let raw = bytes::Bytes::new();
+    for y in 0..height {
+        raw.push(0);
+        for x in 0..width {
+            let r = (x * 2).to_u8();
+            let g = (y * 3).to_u8();
+            let b = (x + y).to_u8();
+            testing::assert_ok(
+                image.set(x, y, testing::expect_ok(Rgba8::new(r, g, b, 255), "pixel")),
+            );
+            raw.push(r);
+            raw.push(g);
+            raw.push(b);
+            raw.push(255);
+        }
+    }
+    let baseline = testing::expect_ok(
+        zlib::encode(raw, compression_budget(), 6),
+        "unfiltered reference",
+    );
+    let wire = testing::expect_ok(png::encode(image), "adaptive PNG");
+    let size = (wire.get(33).to_isize() << 24) | (wire.get(34).to_isize() << 16)
+        | (wire.get(35).to_isize() << 8)
+        | wire.get(36).to_isize();
+    testing::assert(size * 4 < baseline.len());
+    let filtered = testing::expect_ok(
+        zlib::decode(bytes::Bytes::from_slice_copy(wire.slice(41, 41 + size)), compression_budget()),
+        "scanlines",
+    );
+    let stride = 1 + width * 4;
+    testing::assert_eq(filtered.len(), stride * height);
+    let reconstructed = bytes::Bytes::new();
+    let mut used_predictor = false;
+    for y in 0..height {
+        let filter = filtered.get(y * stride).to_isize();
+        testing::assert(filter >= 0 && filter <= 4);
+        used_predictor = used_predictor || filter != 0;
+        for x in 0..width * 4 {
+            let a = if x >= 4 {
+                reconstructed.get(y * width * 4 + x - 4).to_isize()
+            } else {
+                0
+            };
+            let b = if y > 0 {
+                reconstructed.get((y - 1) * width * 4 + x).to_isize()
+            } else {
+                0
+            };
+            let c = if x >= 4 && y > 0 {
+                reconstructed.get((y - 1) * width * 4 + x - 4).to_isize()
+            } else {
+                0
+            };
+            let actual = ((filtered.get(y * stride + x + 1).to_isize() + predictor(filter, a, b, c))
+                & 255).to_u8();
+            testing::assert_eq(actual, raw.get(y * stride + x + 1));
+            reconstructed.push(actual);
+        }
+    }
+    testing::assert(used_predictor);
+    let decoded = testing::expect_ok(png::decode(wire), "roundtrip");
+    for y in 0..height {
+        for x in 0..width {
+            testing::assert(decoded.at(x, y) == image.at(x, y));
+        }
+    }
+    println(f"adaptive PNG IDAT bytes: {size}; filter-zero IDAT bytes: {baseline.len()}");
+}
+
+#[test]
+fn adaptive_filtering_handles_narrow_transparent_and_wrapping_samples() -> () {
+    for width in Vec::from_array([1, 2, 17]) {
+        let image = testing::expect_ok(
+            Image::new(testing::expect_ok(Rect::new(0, 0, width, 7), "bounds")),
+            "image",
+        );
+        for y in 0..7 {
+            for x in 0..width {
+                let alpha: u8 = if (x + y) % 3 == 0 {
+                    0
+                } else {
+                    255
+                };
+                let r = if alpha == 0 {
+                    0
+                } else {
+                    ((x * 197 + y * 89) % 256).to_u8()
+                };
+                let g = if alpha == 0 {
+                    0
+                } else {
+                    ((x * 29 + y * 231) % 256).to_u8()
+                };
+                testing::assert_ok(
+                    image.set(x, y, testing::expect_ok(Rgba8::new(r, g, 0, alpha), "pixel")),
+                );
+            }
+        }
+        for level in Vec::from_array([0, 1, 6, 9]) {
+            let wire = testing::expect_ok(
+                png::encode_with_limits(image, png::Limits::standard(), level),
+                "encode",
+            );
+            let decoded = testing::expect_ok(png::decode(wire), "decode");
+            for y in 0..7 {
+                for x in 0..width {
+                    testing::assert(decoded.at(x, y) == image.at(x, y));
+                }
+            }
+            let repeated = testing::expect_ok(
+                png::encode_with_limits(image, png::Limits::standard(), level),
+                "repeat",
+            );
+            testing::assert_eq(repeated.len(), wire.len());
+            for index in 0..wire.len() {
+                testing::assert_eq(repeated.get(index), wire.get(index));
+            }
+        }
+    }
+}
