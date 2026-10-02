@@ -47,6 +47,23 @@ It unpremultiplies pixels before writing and
 requires a nonempty image at origin `(0, 0)`. This conversion can be lossy for
 translucent pixels.
 
+`encode_with_options(image, limits, EncodeOptions)` selects compression `level`,
+`filter` and `encoding`. `EncodeOptions::standard()` preserves level 6, adaptive
+filtering and RGBA8. `Encoding::{Rgba8, Rgb8, Grayscale8, GrayscaleAlpha8}` maps
+to PNG color types 6, 2, 0 and 4 with eight-bit samples. RGB and grayscale without
+alpha require every pixel to be opaque. Both grayscale modes require equal
+unpremultiplied RGB channels; incompatible pixels return a codec error instead of
+dropping alpha or converting colors. Existing premultiplied-to-straight rounding
+still applies. Scanline budgets use the chosen channel count.
+
+`Filter::{None, Sub, Up, Average, Paeth}` uses one fixed PNG filter on every row,
+providing a cheaper alternative to the five-pass `Adaptive` heuristic. A fixed
+filter can produce larger or smaller files depending on the image. Predictor
+distances follow the encoding's channel count. `PngCodec::with_filter` and
+`with_encoding` select the same policies for the `Codec` trait; decoding remains
+independent of encoding preferences. Palette, low-bit-depth, 16-bit and interlaced
+encoding are not implemented.
+
 The tests use deterministic independently assembled PNG fixtures under
 [`tests/data`](tests/data/README.md), covering every accepted bit-depth/color
 type combination, filters, Adam7, transparency, chunk placement, CRC failures

@@ -39,9 +39,66 @@ impl Limits {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum Filter {
+    Adaptive,
+    None,
+    Sub,
+    Up,
+    Average,
+    Paeth,
+}
+
+impl Filter {
+    fn code(self: Filter) -> isize {
+        match self {
+            Adaptive => -1,
+            None => 0,
+            Sub => 1,
+            Up => 2,
+            Average => 3,
+            Paeth => 4,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Encoding {
+    Rgba8,
+    Rgb8,
+    Grayscale8,
+    GrayscaleAlpha8,
+}
+
+impl Encoding {
+    fn code(self: Encoding) -> isize {
+        match self {
+            Rgba8 => 6,
+            Rgb8 => 2,
+            Grayscale8 => 0,
+            GrayscaleAlpha8 => 4,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct EncodeOptions {
+    pub level: isize,
+    pub filter: Filter,
+    pub encoding: Encoding,
+}
+
+impl EncodeOptions {
+    pub fn standard() -> EncodeOptions {
+        EncodeOptions { level: 6, filter: Filter::Adaptive, encoding: Encoding::Rgba8 }
+    }
+}
+
 pub struct PngCodec {
     limits: Limits,
     level: isize,
+    filter: Filter,
+    encoding: Encoding,
 }
 
 impl PngCodec {
@@ -50,11 +107,24 @@ impl PngCodec {
         if level < 0 || level > 9 {
             return Result::Err(Error::Codec("PNG compression level must be 0 through 9"))
         }
-        Result::Ok(PngCodec { limits, level })
+        Result::Ok(PngCodec { limits, level, filter: Filter::Adaptive, encoding: Encoding::Rgba8 })
     }
 
     pub fn standard() -> PngCodec {
-        PngCodec { limits: Limits::standard(), level: 6 }
+        PngCodec {
+            limits: Limits::standard(),
+            level: 6,
+            filter: Filter::Adaptive,
+            encoding: Encoding::Rgba8,
+        }
+    }
+
+    pub fn with_filter(self: PngCodec, filter: Filter) -> PngCodec {
+        PngCodec { filter, ..self }
+    }
+
+    pub fn with_encoding(self: PngCodec, encoding: Encoding) -> PngCodec {
+        PngCodec { encoding, ..self }
     }
 
     pub fn limits(self: PngCodec) -> Limits {
@@ -123,7 +193,11 @@ impl Codec for PngCodec {
     }
 
     fn encode(self: PngCodec, image: Image) -> Result[bytes::Bytes, Error] {
-        encode_with_limits(image, self.limits, self.level)
+        encode_with_options(
+            image,
+            self.limits,
+            EncodeOptions { level: self.level, filter: self.filter, encoding: self.encoding },
+        )
     }
 }
 
