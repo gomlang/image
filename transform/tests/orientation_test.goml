@@ -1,0 +1,112 @@
+package tests;
+
+use ecosystem::image::{Image, Rect};
+use ecosystem::image::transform::{orient, Orientation};
+use ecosystem::color::{Rgba8};
+use std::testing;
+
+fn orientation_rect(x: isize, y: isize, x2: isize, y2: isize) -> Rect {
+    testing::expect_ok(Rect::new(x, y, x2, y2), "rect")
+}
+
+fn orientation_pixel(value: u8) -> Rgba8 {
+    testing::expect_ok(Rgba8::new(value, 0, 0, value + 10), "premultiplied pixel")
+}
+
+#[test]
+fn all_orientations_have_independent_rectangular_pixel_vectors() -> () {
+    let source = testing::expect_ok(
+        Image::from_pixels(
+            orientation_rect(-4, 7, -2, 10),
+            Vec::from_array(
+                [
+                    orientation_pixel(1),
+                    orientation_pixel(2),
+                    orientation_pixel(3),
+                    orientation_pixel(4),
+                    orientation_pixel(5),
+                    orientation_pixel(6),
+                ],
+            ),
+        ),
+        "offset source",
+    );
+    for (orientation, width, height, values) in[
+        (Orientation::Identity, 2, 3, [1, 2, 3, 4, 5, 6]),
+        (Orientation::FlipHorizontal, 2, 3, [2, 1, 4, 3, 6, 5]),
+        (Orientation::Rotate180, 2, 3, [6, 5, 4, 3, 2, 1]),
+        (Orientation::FlipVertical, 2, 3, [5, 6, 3, 4, 1, 2]),
+        (Orientation::Transpose, 3, 2, [1, 3, 5, 2, 4, 6]),
+        (Orientation::Rotate90, 3, 2, [5, 3, 1, 6, 4, 2]),
+        (Orientation::Transverse, 3, 2, [6, 4, 2, 5, 3, 1]),
+        (Orientation::Rotate270, 3, 2, [2, 4, 6, 1, 3, 5]),
+    ] {
+        let result = testing::expect_ok(orient(source, orientation), "orient");
+        testing::assert(result.bounds() == orientation_rect(0, 0, width, height));
+        for index in 0..6 {
+            testing::assert(result.pixels()[index] == orientation_pixel(values[index].to_u8()));
+        }
+        testing::assert_ok(result.set(0, 0, orientation_pixel(0)));
+        testing::assert(source.at(-4, 7) == Option::Some(orientation_pixel(1)));
+    }
+}
+
+#[test]
+fn orientation_inverses_preserve_exact_pixels_including_alpha() -> () {
+    let source = testing::expect_ok(
+        Image::from_pixels(
+            orientation_rect(0, 0, 3, 1),
+            Vec::from_array([orientation_pixel(1), orientation_pixel(2), orientation_pixel(3)]),
+        ),
+        "thin source",
+    );
+    for (forward, backward) in[
+        (Orientation::Identity, Orientation::Identity),
+        (Orientation::FlipHorizontal, Orientation::FlipHorizontal),
+        (Orientation::FlipVertical, Orientation::FlipVertical),
+        (Orientation::Rotate180, Orientation::Rotate180),
+        (Orientation::Transpose, Orientation::Transpose),
+        (Orientation::Transverse, Orientation::Transverse),
+        (Orientation::Rotate90, Orientation::Rotate270),
+        (Orientation::Rotate270, Orientation::Rotate90),
+    ] {
+        let intermediate = testing::expect_ok(orient(source, forward), "forward");
+        let result = testing::expect_ok(orient(intermediate, backward), "inverse");
+        testing::assert(result.bounds() == source.bounds());
+        testing::assert(result.pixels() == source.pixels());
+    }
+    let copy = testing::expect_ok(orient(source, Orientation::Identity), "copy");
+    testing::assert_ok(source.set(0, 0, orientation_pixel(0)));
+    testing::assert(copy.at(0, 0) == Option::Some(orientation_pixel(1)));
+}
+
+#[test]
+fn orientations_preserve_empty_dimensions_and_single_pixel_images() -> () {
+    for bounds in[
+        orientation_rect(3, -1, 3, 2),
+        orientation_rect(3, -1, 6, -1),
+        orientation_rect(3, -1, 3, -1),
+        orientation_rect(3, -1, 4, 0),
+    ] {
+        let source = testing::expect_ok(Image::filled(bounds, orientation_pixel(5)), "source");
+        for (orientation, swapped) in[
+            (Orientation::Identity, false),
+            (Orientation::FlipHorizontal, false),
+            (Orientation::FlipVertical, false),
+            (Orientation::Rotate180, false),
+            (Orientation::Transpose, true),
+            (Orientation::Transverse, true),
+            (Orientation::Rotate90, true),
+            (Orientation::Rotate270, true),
+        ] {
+            let result = testing::expect_ok(orient(source, orientation), "orient");
+            let expected = if swapped {
+                orientation_rect(0, 0, bounds.height(), bounds.width())
+            } else {
+                orientation_rect(0, 0, bounds.width(), bounds.height())
+            };
+            testing::assert(result.bounds() == expected);
+            testing::assert(result.pixels() == source.pixels());
+        }
+    }
+}

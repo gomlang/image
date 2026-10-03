@@ -1,0 +1,26 @@
+package tests;
+
+use ecosystem::image::{Image, Rect};
+use ecosystem::image::transform::{orient, Orientation};
+use ecosystem::image::png;
+use ecosystem::color::{Rgba8};
+use std::testing;
+
+#[test]
+fn downstream_rotates_then_encodes_without_resampling_pixels() -> () {
+    let red = testing::expect_ok(Rgba8::new(128, 0, 0, 128), "red");
+    let blue = testing::expect_ok(Rgba8::new(0, 0, 255, 255), "blue");
+    let source = testing::expect_ok(
+        Image::from_pixels(
+            testing::expect_ok(Rect::new(-1, 2, 1, 3), "rect"),
+            Vec::from_array([red, blue]),
+        ),
+        "source",
+    );
+    let portrait = testing::expect_ok(orient(source, Orientation::Rotate90), "rotate");
+    testing::assert_eq(portrait.bounds().width(), 1);
+    testing::assert_eq(portrait.bounds().height(), 2);
+    let encoded = testing::expect_ok(png::encode(portrait), "PNG");
+    let decoded = testing::expect_ok(png::decode(encoded), "decode");
+    testing::assert(decoded.pixels() == Vec::from_array([red, blue]));
+}

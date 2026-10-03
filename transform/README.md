@@ -24,3 +24,28 @@ are interpolated in their premultiplied form so transparency does not introduce
 dark color fringes. All calculations use encoded sRGB values, without linear-light
 conversion. Bilinear resize is not an area or antialiasing filter for substantial
 downsampling; aspect ratio is selected by the caller.
+
+## Lossless orientation
+
+`orient(source, Orientation)` returns an independent image at `(0, 0)` without
+resampling or changing any premultiplied RGBA channel. Rotations are clockwise
+in image coordinates (x grows right, y grows down). The eight operations cover
+all quarter-turn and mirror combinations:
+
+| Orientation | Result for rows `AB / CD / EF` |
+| --- | --- |
+| `Identity` | `AB / CD / EF` |
+| `FlipHorizontal` | `BA / DC / FE` |
+| `Rotate180` | `FE / DC / BA` |
+| `FlipVertical` | `EF / CD / AB` |
+| `Transpose` | `ACE / BDF` |
+| `Rotate90` | `ECA / FDB` |
+| `Transverse` | `FDB / ECA` |
+| `Rotate270` | `BDF / ACE` |
+
+The last four swap width and height; this also preserves the shape of zero-width
+or zero-height images after swapping. Source coordinate offsets are normalized,
+and even `Identity` copies storage. Work and additional storage are O(pixels).
+Existing image dimension/pixel bounds apply unchanged because the operation
+preserves pixel count. The function does not parse or apply EXIF metadata;
+callers choose the orientation explicitly.

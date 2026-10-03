@@ -1,0 +1,52 @@
+package transform;
+
+use ecosystem::image::{Image, Rect, Error};
+use ecosystem::color::{Rgba8};
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Orientation {
+    Identity,
+    FlipHorizontal,
+    Rotate180,
+    FlipVertical,
+    Transpose,
+    Rotate90,
+    Transverse,
+    Rotate270,
+}
+
+pub fn orient(source: Image, orientation: Orientation) -> Result[Image, Error] {
+    let original = source.bounds();
+    let width = original.width();
+    let height = original.height();
+    let swap_axes = match orientation {
+        Transpose | Rotate90 | Transverse | Rotate270 => true,
+        _ => false,
+    };
+    let bounds = if swap_axes {
+        Rect::new(0, 0, height, width)?
+    } else {
+        Rect::new(0, 0, width, height)?
+    };
+    // Image already enforces dimensions and pixel limits. Every transform
+    // preserves the exact count, even when one dimension is zero.
+    let pixels: Vec[Rgba8] = Vec::with_capacity(source.len());
+    for y in 0..bounds.height() {
+        for x in 0..bounds.width() {
+            let (sx, sy) = match orientation {
+                Identity => (x, y),
+                FlipHorizontal => (width - 1 - x, y),
+                Rotate180 => (width - 1 - x, height - 1 - y),
+                FlipVertical => (x, height - 1 - y),
+                Transpose => (y, x),
+                Rotate90 => (y, height - 1 - x),
+                Transverse => (width - 1 - y, height - 1 - x),
+                Rotate270 => (width - 1 - y, x),
+            };
+            pixels.push(
+                source.at(original.min_x() + sx, original.min_y() + sy).ok_or(Error::OutOfBounds)?,
+            );
+        }
+    }
+    Image::from_pixels(bounds, pixels)
+}

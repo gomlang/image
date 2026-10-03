@@ -6,7 +6,7 @@ It depends on `ecosystem::color` for `Rgba8`. The nested
 [`png`](png/README.md) provides a bounded PNG codec,
 [`jpeg`](jpeg/README.md) adds JPEG decoding/encoding,
 [`webp`](webp/README.md) adds still WebP decoding and lossless encoding, and
-[`transform`](transform/README.md) provides crop and nearest/bilinear resize.
+[`transform`](transform/README.md) provides crop, nearest/bilinear resize, and lossless orientation.
 
 ```toml
 [dependencies]
