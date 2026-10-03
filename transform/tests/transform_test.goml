@@ -1,0 +1,120 @@
+package tests;
+
+use ecosystem::image::{Rect, Image};
+use ecosystem::image::transform;
+use ecosystem::image::transform::{Filter};
+use ecosystem::color::{Rgba8};
+use std::testing;
+
+fn pixel(red: u8, green: u8, blue: u8, alpha: u8) -> Rgba8 {
+    testing::expect_ok(Rgba8::new(red, green, blue, alpha), "pixel")
+}
+
+fn rect(x: isize, y: isize, x2: isize, y2: isize) -> Rect {
+    testing::expect_ok(Rect::new(x, y, x2, y2), "rect")
+}
+
+#[test]
+fn nearest_uses_centers_and_normalizes_offset_origin() -> () {
+    let source = testing::expect_ok(
+        Image::from_pixels(
+            rect(-2, 5, 0, 6),
+            Vec::from_array([pixel(255, 0, 0, 255), pixel(0, 0, 255, 255)]),
+        ),
+        "source",
+    );
+    let resized = testing::expect_ok(transform::resize(source, 4, 2, Filter::Nearest), "nearest");
+    testing::assert(resized.bounds() == rect(0, 0, 4, 2));
+    for y in 0..2 {
+        testing::assert(resized.at(0, y) == source.at(-2, 5));
+        testing::assert(resized.at(1, y) == source.at(-2, 5));
+        testing::assert(resized.at(2, y) == source.at(-1, 5));
+        testing::assert(resized.at(3, y) == source.at(-1, 5));
+    }
+    let single = testing::expect_ok(transform::resize(source, 1, 1, Filter::Nearest), "downsample");
+    testing::assert(single.at(0, 0) == source.at(-1, 5));
+}
+
+#[test]
+fn bilinear_interpolates_premultiplied_alpha_without_dark_fringe() -> () {
+    let source = testing::expect_ok(
+        Image::from_pixels(
+            rect(0, 0, 2, 1),
+            Vec::from_array([pixel(255, 0, 0, 255), pixel(0, 0, 0, 0)]),
+        ),
+        "source",
+    );
+    let resized = testing::expect_ok(transform::resize(source, 4, 1, Filter::Bilinear), "bilinear");
+    testing::assert(
+        resized.pixels()
+            == Vec::from_array(
+                [
+                    pixel(255, 0, 0, 255),
+                    pixel(191, 0, 0, 191),
+                    pixel(64, 0, 0, 64),
+                    pixel(0, 0, 0, 0),
+                ],
+            ),
+    );
+    let reduced = testing::expect_ok(transform::resize(source, 1, 1, Filter::Bilinear), "average");
+    testing::assert(reduced.at(0, 0) == Option::Some(pixel(128, 0, 0, 128)));
+    let identity = testing::expect_ok(transform::resize(source, 2, 1, Filter::Bilinear), "identity");
+    testing::assert(identity.pixels() == source.pixels());
+}
+
+#[test]
+fn bilinear_interpolates_both_axes_and_clamps_single_pixel_edges() -> () {
+    let source = testing::expect_ok(
+        Image::from_pixels(
+            rect(-1, -1, 1, 1),
+            Vec::from_array(
+                [
+                    pixel(0, 0, 0, 255),
+                    pixel(100, 0, 0, 255),
+                    pixel(0, 100, 0, 255),
+                    pixel(100, 100, 0, 255),
+                ],
+            ),
+        ),
+        "source",
+    );
+    let resized = testing::expect_ok(transform::resize(source, 1, 1, Filter::Bilinear), "center");
+    testing::assert(resized.at(0, 0) == Option::Some(pixel(50, 50, 0, 255)));
+    let upscaled = testing::expect_ok(
+        transform::resize(resized, 3, 2, Filter::Bilinear),
+        "single pixel upscale",
+    );
+    for p in upscaled.pixels() {
+        testing::assert(p == pixel(50, 50, 0, 255));
+    }
+}
+
+#[test]
+fn crop_is_strict_independent_and_zero_origin() -> () {
+    let source = testing::expect_ok(
+        Image::filled(rect(-2, 2, 1, 4), pixel(128, 0, 0, 128)),
+        "source",
+    );
+    let cropped = testing::expect_ok(transform::crop(source, rect(-1, 2, 1, 3)), "crop");
+    testing::assert(cropped.bounds() == rect(0, 0, 2, 1));
+    testing::assert_ok(source.set(-1, 2, pixel(0, 0, 0, 0)));
+    testing::assert(cropped.at(0, 0) == Option::Some(pixel(128, 0, 0, 128)));
+    testing::assert_err(transform::crop(source, rect(-3, 2, 1, 3)));
+    testing::assert_err(transform::crop(source, rect(2, 2, 2, 2)));
+    let empty = testing::expect_ok(transform::crop(source, rect(1, 4, 1, 4)), "empty crop");
+    testing::assert(empty.len() == 0);
+}
+
+#[test]
+fn resize_checks_empty_negative_and_oversized_dimensions_before_allocating() -> () {
+    let source = testing::expect_ok(Image::new(rect(0, 0, 1, 1)), "source");
+    testing::assert_err(transform::resize(source, -1, 1, Filter::Nearest));
+    testing::assert_err(transform::resize(source, 4097, 1, Filter::Bilinear));
+    testing::assert_err(transform::resize(source, 4096, 4096, Filter::Nearest));
+    let empty = testing::expect_ok(
+        transform::resize(source, 0, 3, Filter::Bilinear),
+        "empty destination",
+    );
+    testing::assert(empty.len() == 0);
+    testing::assert_err(transform::resize(empty, 1, 1, Filter::Nearest));
+}

@@ -1,0 +1,212 @@
+package tests;
+
+use ecosystem::image::{Image, Rect, Codec};
+use ecosystem::image::codecs::{Limits};
+use ecosystem::image::jpeg;
+use ecosystem::image::webp;
+use ecosystem::color::{Rgba8};
+use std::bytes;
+use std::fs;
+use std::testing;
+
+fn fixture(name: string) -> bytes::Bytes {
+    testing::expect_ok(fs::read_bytes_structured("tests/data/" + name), "independent codec fixture")
+}
+
+fn close_channel(actual: u8, expected: isize, tolerance: isize) -> () {
+    testing::assert(
+        actual.to_isize() >= expected - tolerance && actual.to_isize() <= expected + tolerance,
+    );
+}
+
+#[test]
+fn independent_baseline_and_progressive_jpeg_pixels() -> () {
+    for name in Vec::from_array(["solid.jpg", "progressive.jpg"]) {
+        let decoded = testing::expect_ok(jpeg::decode(fixture(name)), "JPEG decode");
+        testing::assert(decoded.bounds() == rect(0, 0, 8, 8));
+        for p in decoded.pixels() {
+            close_channel(p.red(), 32, 2);
+            close_channel(p.green(), 96, 2);
+            close_channel(p.blue(), 160, 2);
+            testing::assert(p.alpha() == 255);
+        }
+    }
+}
+
+#[test]
+fn independent_lossy_and_lossless_webp_pixels() -> () {
+    let decoded = testing::expect_ok(webp::decode(fixture("alpha.webp")), "lossless WebP decode");
+    testing::assert(decoded.bounds() == rect(0, 0, 2, 2));
+    testing::assert(
+        decoded.pixels()
+            == Vec::from_array(
+                [
+                    pixel(255, 0, 0, 255),
+                    pixel(0, 128, 0, 128),
+                    pixel(0, 0, 64, 64),
+                    pixel(0, 0, 0, 0),
+                ],
+            ),
+    );
+    let gray = testing::expect_ok(webp::decode(fixture("gray.webp")), "lossy WebP decode");
+    testing::assert(gray.bounds() == rect(0, 0, 8, 8));
+    for p in gray.pixels() {
+        close_channel(p.red(), 128, 2);
+        close_channel(p.green(), 128, 2);
+        close_channel(p.blue(), 128, 2);
+        testing::assert(p.alpha() == 255);
+    }
+}
+
+#[test]
+fn encoding_accepts_offset_bounds_and_flattens_jpeg_alpha() -> () {
+    let image = testing::expect_ok(
+        Image::filled(rect(-10, 20, -2, 28), pixel(128, 0, 0, 128)),
+        "source",
+    );
+    let standard = testing::expect_ok(
+        jpeg::decode(testing::expect_ok(jpeg::encode(image), "JPEG encode")),
+        "decode",
+    );
+    let light = testing::expect_some(standard.at(0, 0), "light JPEG pixel");
+    close_channel(light.red(), 255, 3);
+    close_channel(light.green(), 127, 3);
+    close_channel(light.blue(), 127, 3);
+    let codec = testing::expect_ok(
+        jpeg::JpegCodec::new(Limits::standard(), 100, pixel(0, 0, 0, 255)),
+        "JPEG codec",
+    );
+    let dark = testing::expect_ok(
+        codec.decode(testing::expect_ok(codec.encode(image), "encode dark")),
+        "decode dark",
+    );
+    let p = testing::expect_some(dark.at(0, 0), "dark pixel");
+    close_channel(p.red(), 128, 2);
+    close_channel(p.green(), 0, 2);
+    close_channel(p.blue(), 0, 2);
+    testing::assert(p.alpha() == 255);
+    let source = testing::expect_ok(webp::decode(fixture("alpha.webp")), "source alpha");
+    let encoded = testing::expect_ok(webp::encode(source), "WebP encode");
+    let output = testing::expect_ok(webp::decode(encoded), "WebP roundtrip");
+    testing::assert(output.pixels() == source.pixels());
+}
+
+#[test]
+fn codecs_reject_bad_options_and_empty_images() -> () {
+    testing::assert_err(jpeg::JpegCodec::new(Limits::standard(), 0, pixel(0, 0, 0, 255)));
+    testing::assert_err(jpeg::JpegCodec::new(Limits::standard(), 101, pixel(0, 0, 0, 255)));
+    testing::assert_err(jpeg::JpegCodec::new(Limits::standard(), 80, pixel(0, 0, 0, 0)));
+    testing::assert_err(webp::WebpCodec::new(Limits::standard(), -1));
+    testing::assert_err(webp::WebpCodec::new(Limits::standard(), 7));
+    testing::assert_err((Limits { max_dimension: 4097, ..Limits::standard() }).validate());
+    testing::assert_err((Limits { max_input_bytes: 67108865, ..Limits::standard() }).validate());
+    let empty = testing::expect_ok(Image::new(rect(0, 0, 0, 0)), "empty");
+    testing::assert_err(jpeg::encode(empty));
+    testing::assert_err(webp::encode(empty));
+}
+
+#[test]
+fn codecs_enforce_input_dimensions_pixels_decoded_and_output_limits() -> () {
+    let jpg = fixture("solid.jpg");
+    let wp = fixture("alpha.webp");
+    testing::assert_err(
+        jpeg::decode_with_limits(
+            jpg,
+            Limits { max_input_bytes: jpg.len() - 1, ..Limits::standard() },
+        ),
+    );
+    testing::assert_err(
+        webp::decode_with_limits(wp, Limits { max_input_bytes: wp.len() - 1, ..Limits::standard() }),
+    );
+    testing::assert_err(
+        jpeg::decode_with_limits(jpg, Limits { max_dimension: 7, ..Limits::standard() }),
+    );
+    testing::assert_err(
+        webp::decode_with_limits(wp, Limits { max_dimension: 1, ..Limits::standard() }),
+    );
+    testing::assert_err(
+        jpeg::decode_with_limits(jpg, Limits { max_pixels: 63, ..Limits::standard() }),
+    );
+    testing::assert_err(
+        webp::decode_with_limits(wp, Limits { max_pixels: 3, ..Limits::standard() }),
+    );
+    testing::assert_err(
+        jpeg::decode_with_limits(jpg, Limits { max_decoded_bytes: 255, ..Limits::standard() }),
+    );
+    testing::assert_err(
+        webp::decode_with_limits(wp, Limits { max_decoded_bytes: 15, ..Limits::standard() }),
+    );
+    let source = testing::expect_ok(webp::decode(wp), "source");
+    let jc = testing::expect_ok(
+        jpeg::JpegCodec::new(
+            Limits { max_output_bytes: 10, ..Limits::standard() },
+            90,
+            pixel(0, 0, 0, 255),
+        ),
+        "tiny JPEG",
+    );
+    let wc = testing::expect_ok(
+        webp::WebpCodec::new(Limits { max_output_bytes: 10, ..Limits::standard() }, 0),
+        "tiny WebP",
+    );
+    testing::assert_err(jc.encode(source));
+    testing::assert_err(wc.encode(source));
+    testing::assert_ok(
+        webp::decode_with_limits(
+            wp,
+            Limits { max_pixels: 4, max_decoded_bytes: 16, ..Limits::standard() },
+        ),
+    );
+}
+
+#[test]
+fn codecs_reject_malformed_truncated_and_oversized_headers() -> () {
+    testing::assert_err(jpeg::decode(bytes::Bytes::from_string("not a jpeg")));
+    testing::assert_err(webp::decode(bytes::Bytes::from_string("not a webp")));
+    let jpg = fixture("solid.jpg");
+    let truncated = jpg.copy();
+    truncated.truncate(40);
+    testing::assert_err(jpeg::decode(truncated));
+    let wp = fixture("alpha.webp");
+    let truncated_webp = wp.copy();
+    truncated_webp.truncate(wp.len() - 1);
+    testing::assert_err(webp::decode(truncated_webp));
+    let oversized = wp.copy();
+    oversized.set(21, 255);
+    oversized.set(22, 63);
+    testing::assert_err(webp::decode(oversized));
+    let trailing = wp.copy();
+    trailing.push(0);
+    testing::assert_err(webp::decode(trailing));
+}
+
+#[test]
+fn lossy_webp_uses_video_color_range_and_preserves_alpha() -> () {
+    let color = testing::expect_ok(webp::decode(fixture("color.webp")), "colored WebP");
+    for p in color.pixels() {
+        close_channel(p.red(), 31, 1);
+        close_channel(p.green(), 96, 1);
+        close_channel(p.blue(), 160, 1);
+        testing::assert_eq(p.alpha(), 255);
+    }
+    let alpha = testing::expect_ok(webp::decode(fixture("color-alpha.webp")), "colored alpha WebP");
+    for p in alpha.pixels() {
+        close_channel(p.red(), 16, 1);
+        close_channel(p.green(), 48, 1);
+        close_channel(p.blue(), 80, 1);
+        testing::assert_eq(p.alpha(), 128);
+    }
+    for name in Vec::from_array(["black.webp", "white.webp"]) {
+        let decoded = testing::expect_ok(webp::decode(fixture(name)), "full range WebP");
+        let expected = if name == "black.webp" {
+            0
+        } else {
+            255
+        };
+        for p in decoded.pixels() {
+            close_channel(p.red(), expected, 1);
+            close_channel(p.green(), expected, 1);
+            close_channel(p.blue(), expected, 1);
+        }
+    }
+}

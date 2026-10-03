@@ -1,0 +1,26 @@
+package tests;
+
+use ecosystem::image::examples::basic;
+use ecosystem::image::webp;
+use ecosystem::image::png;
+use ecosystem::image::jpeg;
+use std::fs;
+use std::testing;
+
+#[test]
+fn public_thumbnail_pipeline_uses_independent_webp_source() -> () {
+    let bytes = testing::expect_ok(fs::read_bytes_structured("tests/data/alpha.webp"), "fixture");
+    let source = testing::expect_ok(webp::decode(bytes), "source WebP");
+    let result = basic::thumbnail(source);
+    testing::assert_eq(result.len(), 16);
+    let top_left = testing::expect_some(result.at(0, 0), "red corner");
+    testing::assert_eq(top_left.red(), 255);
+    testing::assert_eq(top_left.alpha(), 255);
+    let transparent = testing::expect_some(result.at(3, 3), "transparent corner");
+    testing::assert_eq(transparent.alpha(), 0);
+    let png_wire = testing::expect_ok(png::encode(result), "PNG thumbnail");
+    testing::assert_eq(testing::expect_ok(png::decode(png_wire), "PNG decode").len(), 16);
+    let jpeg_wire = testing::expect_ok(jpeg::encode(result), "JPEG thumbnail");
+    testing::assert_eq(testing::expect_ok(jpeg::decode(jpeg_wire), "JPEG decode").len(), 16);
+    basic::exercise_codecs();
+}
