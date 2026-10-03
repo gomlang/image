@@ -14,8 +14,9 @@ v1.3.0. Both use Go without cgo or a system libwebp installation.
 `decode(bytes)`, `decode_with_limits(bytes, codecs::Limits)` and `encode(image)`
 return the parent `Result` and `Error` types. `WebpCodec` implements `image::Codec`.
 `WebpCodec::standard()` selects encoding effort 4. `WebpCodec::new(limits, effort)`
-accepts effort 0 through 6, trading encoder work for compressed size; all values
-encode losslessly. `limits()` and `effort()` expose the selected settings. Lossy
+accepts effort 0 through 6. The pinned backend implements 0 (speed), 4 (default)
+and 6 (compression); 1, 2, 3 and 5 select the same algorithm as 4. All values
+encode losslessly. `limits()` and `effort()` expose the requested settings. Lossy
 WebP encoding is not implemented.
 
 WebP straight-alpha colors are converted to the common premultiplied `Rgba8`
@@ -29,5 +30,8 @@ dimensions before full decode and limits the encoded output writer. The selected
 decoder checks extended-canvas and frame dimensions agree before decoding a
 VP8L frame, preventing a small canvas header from disguising a large allocation.
 Metadata, EXIF orientation and ICC color management are not applied or preserved.
-The Go backend's VP8 YCbCr conversion is used; it can differ slightly from libwebp
-for colored lossy inputs. Use lossless encoding when exact stored pixels matter.
+The adapter converts VP8's limited-range BT.601 samples explicitly, following
+[RFC 6386](https://www.rfc-editor.org/rfc/rfc6386.html#section-9.2), instead of
+applying Go's JPEG full-range conversion. Chroma sampling uses the decoded
+4:2:0 pixel's nearest chroma sample; edge colors can differ from libwebp's
+interpolated chroma upsampling. Use lossless encoding when exact stored pixels matter.

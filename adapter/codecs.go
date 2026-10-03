@@ -73,13 +73,39 @@ func decode(data string, maxInput, maxDimension, maxPixels, maxDecoded int, isWe
 	pixels := make([]byte, 0, bounds.Dx()*bounds.Dy()*4)
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			sample := color.NRGBAModel.Convert(decoded.At(x, y)).(color.NRGBA)
+			var sample color.NRGBA
+			if isWebP {
+				sample = webpSample(decoded, x, y)
+			} else {
+				sample = color.NRGBAModel.Convert(decoded.At(x, y)).(color.NRGBA)
+			}
 			alpha := uint32(sample.A)
 			pixels = append(pixels, byte((uint32(sample.R)*alpha+127)/255),
 				byte((uint32(sample.G)*alpha+127)/255), byte((uint32(sample.B)*alpha+127)/255), sample.A)
 		}
 	}
 	return string(pixels), bounds.Dx(), bounds.Dy(), ""
+}
+
+func webpSample(decoded image.Image, x, y int) color.NRGBA {
+	var sample color.YCbCr
+	alpha := byte(255)
+	switch img := decoded.(type) {
+	case *image.YCbCr:
+		sample = img.YCbCrAt(x, y)
+	case *image.NYCbCrA:
+		sample = img.YCbCrAt(x, y)
+		alpha = img.A[img.AOffset(x, y)]
+	default:
+		return color.NRGBAModel.Convert(decoded.At(x, y)).(color.NRGBA)
+	}
+	luma := 19077 * (int(sample.Y) - 16)
+	cb := int(sample.Cb) - 128
+	cr := int(sample.Cr) - 128
+	red := (luma + 26149*cr + 8192) >> 14
+	green := (luma - 6419*cb - 13320*cr + 8192) >> 14
+	blue := (luma + 33050*cb + 8192) >> 14
+	return color.NRGBA{R: byte(max(0, min(255, red))), G: byte(max(0, min(255, green))), B: byte(max(0, min(255, blue))), A: alpha}
 }
 
 func DecodeJPEG(data string, maxInput, maxDimension, maxPixels, maxDecoded int) (pixels string, width, height int, failure string) {
