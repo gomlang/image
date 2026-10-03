@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "package": "native",
+  "output": "native/generated.goml",
+  "go_package": "adapter",
+  "go_output": "adapter/generated.go",
+  "go_import_path": "example.com/goml-ecosystem/image/adapter",
+  "functions": [
+    {
+      "name": "decode_jpeg",
+      "import_path": "example.com/goml-ecosystem/image/adapter",
+      "symbol": "DecodeJPEG"
+    },
+    {
+      "name": "encode_jpeg",
+      "import_path": "example.com/goml-ecosystem/image/adapter",
+      "symbol": "EncodeJPEG"
+    },
+    {
+      "name": "decode_webp",
+      "import_path": "example.com/goml-ecosystem/image/adapter",
+      "symbol": "DecodeWebP"
+    },
+    {
+      "name": "encode_webp",
+      "import_path": "example.com/goml-ecosystem/image/adapter",
+      "symbol": "EncodeWebP"
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+package webp;
+
+use ecosystem::image::{Image, Codec, Error};
+use ecosystem::image::codecs::{Limits};
+use ecosystem::image::codecs;
+use ecosystem::image::native;
+use std::bytes;
+use std::ffi;
+
+pub struct WebpCodec {
+    limits: Limits,
+    effort: isize,
+}
+
+impl WebpCodec {
+    pub fn standard() -> WebpCodec {
+        WebpCodec { limits: Limits::standard(), effort: 4 }
+    }
+
+    pub fn new(limits: Limits, effort: isize) -> Result[WebpCodec, Error] {
+        limits.validate()?;
+        if effort < 0 || effort > 6 {
+            return Result::Err(Error::Codec("WebP encoding effort must be 0 through 6"))
+        }
+        Result::Ok(WebpCodec { limits, effort })
+    }
+
+    pub fn limits(self: WebpCodec) -> Limits {
+        self.limits
+    }
+
+    pub fn effort(self: WebpCodec) -> isize {
+        self.effort
+    }
+}
+
+impl Codec for WebpCodec {
+    fn decode(self: WebpCodec, data: bytes::Bytes) -> Result[Image, Error] {
+        decode_with_limits(data, self.limits)
+    }
+
+    fn encode(self: WebpCodec, image: Image) -> Result[bytes::Bytes, Error] {
+        self.limits.check_image(image)?;
+        let bounds = image.bounds();
+        let (data, failure) = native::encode_webp(
+            codecs::pack(image),
+            bounds.width(),
+            bounds.height(),
+            self.limits.max_dimension,
+            self.limits.max_pixels,
+            self.limits.max_decoded_bytes,
+            self.limits.max_output_bytes,
+            self.effort,
+        );
+        codecs::encoded(data, failure)
+    }
+}
+
+pub fn decode(data: bytes::Bytes) -> Result[Image, Error] {
+    decode_with_limits(data, Limits::standard())
+}
+
+pub fn decode_with_limits(data: bytes::Bytes, limits: Limits) -> Result[Image, Error] {
+    limits.check_input(data)?;
+    let (raw, width, height, failure) = native::decode_webp(
+        ffi::string_from_bytes(data),
+        limits.max_input_bytes,
+        limits.max_dimension,
+        limits.max_pixels,
+        limits.max_decoded_bytes,
+    );
+    codecs::unpack(raw, width, height, failure)
+}
+
+pub fn encode(image: Image) -> Result[bytes::Bytes, Error] {
+    WebpCodec::standard().encode(image)
+}

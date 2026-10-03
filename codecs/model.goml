@@ -1,0 +1,107 @@
+package codecs;
+
+use ecosystem::image::{Image, Rect, Error, MAX_DIMENSION, MAX_PIXELS};
+use ecosystem::color::{Rgba8};
+use std::bytes;
+use std::ffi;
+
+pub const MAX_BYTES: isize = 67108864;
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Limits {
+    pub max_input_bytes: isize,
+    pub max_output_bytes: isize,
+    pub max_dimension: isize,
+    pub max_pixels: isize,
+    pub max_decoded_bytes: isize,
+}
+
+impl Limits {
+    pub fn standard() -> Limits {
+        Limits {
+            max_input_bytes: 8388608,
+            max_output_bytes: 8388608,
+            max_dimension: MAX_DIMENSION,
+            max_pixels: MAX_PIXELS,
+            max_decoded_bytes: MAX_PIXELS * 4,
+        }
+    }
+
+    pub fn validate(self: Limits) -> Result[(), Error] {
+        if self.max_input_bytes < 0 || self.max_input_bytes > MAX_BYTES || self.max_output_bytes < 0
+            || self.max_output_bytes > MAX_BYTES
+            || self.max_dimension < 1
+            || self.max_dimension > MAX_DIMENSION
+            || self.max_pixels < 0
+            || self.max_pixels > MAX_PIXELS
+            || self.max_decoded_bytes < 0
+            || self.max_decoded_bytes > MAX_PIXELS * 4 {
+            return Result::Err(Error::Codec("invalid image codec limits"))
+        }
+        Result::Ok(())
+    }
+
+    pub fn check_input(self: Limits, input: bytes::Bytes) -> Result[(), Error] {
+        self.validate()?;
+        if input.len() > self.max_input_bytes {
+            return Result::Err(Error::Codec("image input byte limit exceeded"))
+        }
+        Result::Ok(())
+    }
+
+    pub fn check_image(self: Limits, image: Image) -> Result[(), Error] {
+        self.validate()?;
+        let bounds = image.bounds();
+        if bounds.is_empty() || bounds.width() > self.max_dimension
+            || bounds.height() > self.max_dimension
+            || image.len() > self.max_pixels
+            || image.len() * 4 > self.max_decoded_bytes {
+            return Result::Err(Error::Codec("image dimensions or decoded byte limit exceeded"))
+        }
+        Result::Ok(())
+    }
+}
+
+pub fn unpack(data: ffi::String, width: isize, height: isize, failure: ffi::String) -> Result[
+    Image,
+    Error,
+] {
+    let message = ffi::string_text(failure).map_err(|_| Error::Codec("invalid codec diagnostic"))?;
+    if message != "" {
+        return Result::Err(Error::Codec(message))
+    }
+    let bounds = Rect::new(0, 0, width, height)?;
+    let raw = ffi::string_bytes(data);
+    if width * height > MAX_PIXELS || raw.len() != width * height * 4 {
+        return Result::Err(Error::PixelCount)
+    }
+    let pixels: Vec[Rgba8] = Vec::with_capacity(width * height);
+    for offset in 0..width * height {
+        let index = offset * 4;
+        pixels.push(
+            Rgba8::new(raw.get(index), raw.get(index + 1), raw.get(index + 2), raw.get(index + 3)).map_err(
+                |_| Error::InvalidPixel,
+            )?,
+        );
+    }
+    Image::from_pixels(bounds, pixels)
+}
+
+pub fn pack(image: Image) -> ffi::String {
+    let raw = bytes::Bytes::with_capacity(image.len() * 4);
+    for pixel in image.pixels() {
+        raw.push(pixel.red());
+        raw.push(pixel.green());
+        raw.push(pixel.blue());
+        raw.push(pixel.alpha());
+    }
+    ffi::string_from_bytes(raw)
+}
+
+pub fn encoded(data: ffi::String, failure: ffi::String) -> Result[bytes::Bytes, Error] {
+    let message = ffi::string_text(failure).map_err(|_| Error::Codec("invalid codec diagnostic"))?;
+    if message != "" {
+        return Result::Err(Error::Codec(message))
+    }
+    Result::Ok(ffi::string_bytes(data))
+}

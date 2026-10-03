@@ -3,6 +3,9 @@ package main;
 use ecosystem::image::{Rect, Image, Codec, RawRgbaCodec};
 use ecosystem::image::draw;
 use ecosystem::image::png;
+use ecosystem::image::jpeg;
+use ecosystem::image::webp;
+use ecosystem::image::transform;
 use ecosystem::color::{Rgba8};
 use std::testing;
 
@@ -24,7 +27,31 @@ pub fn exercise() -> () {
     testing::assert(png_image.at(0, 0) == decoded.at(0, 0));
 }
 
+pub fn thumbnail(source: Image) -> Image {
+    let bounds = source.bounds();
+    let selected = testing::expect_ok(transform::crop(source, bounds), "thumbnail crop");
+    testing::expect_ok(
+        transform::resize(selected, 4, 4, transform::Filter::Bilinear),
+        "thumbnail resize",
+    )
+}
+
+pub fn exercise_codecs() -> () {
+    let bounds = testing::expect_ok(Rect::new(-2, 3, 0, 5), "thumbnail source bounds");
+    let pixel = testing::expect_ok(Rgba8::new(128, 0, 0, 128), "thumbnail color");
+    let source = testing::expect_ok(Image::filled(bounds, pixel), "thumbnail source");
+    let result = thumbnail(source);
+    let webp_wire = testing::expect_ok(webp::encode(result), "thumbnail WebP");
+    let decoded = testing::expect_ok(webp::decode(webp_wire), "thumbnail WebP decode");
+    testing::assert(decoded.pixels() == result.pixels());
+    let jpeg_wire = testing::expect_ok(jpeg::encode(result), "thumbnail JPEG");
+    let opaque = testing::expect_ok(jpeg::decode(jpeg_wire), "thumbnail JPEG decode");
+    testing::assert_eq(opaque.len(), 16);
+    testing::assert_eq(testing::expect_some(opaque.at(0, 0), "opaque thumbnail").alpha(), 255);
+}
+
 fn main() -> () {
     exercise();
-    println("image consumer: clipped premultiplied draw and raw codec ok");
+    exercise_codecs();
+    println("image consumer: draw, PNG, JPEG, WebP and thumbnail transforms ok");
 }

@@ -1,0 +1,85 @@
+package jpeg;
+
+use ecosystem::image::{Image, Codec, Error};
+use ecosystem::image::codecs::{Limits};
+use ecosystem::image::codecs;
+use ecosystem::image::native;
+use ecosystem::color::{Rgba8};
+use std::bytes;
+use std::ffi;
+
+pub struct JpegCodec {
+    limits: Limits,
+    quality: isize,
+    background: u32,
+}
+
+impl JpegCodec {
+    pub fn standard() -> JpegCodec {
+        JpegCodec { limits: Limits::standard(), quality: 85, background: 0xffffffff }
+    }
+
+    pub fn new(limits: Limits, quality: isize, background: Rgba8) -> Result[JpegCodec, Error] {
+        limits.validate()?;
+        if quality < 1 || quality > 100 || background.alpha() != 255 {
+            return Result::Err(
+                Error::Codec("JPEG requires quality 1 through 100 and an opaque background"),
+            )
+        }
+        let packed = background.red().to_u32() << 24 | background.green().to_u32() << 16
+            | background.blue().to_u32() << 8
+            | 255;
+        Result::Ok(JpegCodec { limits, quality, background: packed })
+    }
+
+    pub fn limits(self: JpegCodec) -> Limits {
+        self.limits
+    }
+
+    pub fn quality(self: JpegCodec) -> isize {
+        self.quality
+    }
+}
+
+impl Codec for JpegCodec {
+    fn decode(self: JpegCodec, data: bytes::Bytes) -> Result[Image, Error] {
+        decode_with_limits(data, self.limits)
+    }
+
+    fn encode(self: JpegCodec, image: Image) -> Result[bytes::Bytes, Error] {
+        self.limits.check_image(image)?;
+        let bounds = image.bounds();
+        let (data, failure) = native::encode_jpeg(
+            codecs::pack(image),
+            bounds.width(),
+            bounds.height(),
+            self.limits.max_dimension,
+            self.limits.max_pixels,
+            self.limits.max_decoded_bytes,
+            self.limits.max_output_bytes,
+            self.quality,
+            self.background,
+        );
+        codecs::encoded(data, failure)
+    }
+}
+
+pub fn decode(data: bytes::Bytes) -> Result[Image, Error] {
+    decode_with_limits(data, Limits::standard())
+}
+
+pub fn decode_with_limits(data: bytes::Bytes, limits: Limits) -> Result[Image, Error] {
+    limits.check_input(data)?;
+    let (raw, width, height, failure) = native::decode_jpeg(
+        ffi::string_from_bytes(data),
+        limits.max_input_bytes,
+        limits.max_dimension,
+        limits.max_pixels,
+        limits.max_decoded_bytes,
+    );
+    codecs::unpack(raw, width, height, failure)
+}
+
+pub fn encode(image: Image) -> Result[bytes::Bytes, Error] {
+    JpegCodec::standard().encode(image)
+}

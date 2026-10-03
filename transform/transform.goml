@@ -1,0 +1,103 @@
+package transform;
+
+use ecosystem::image::{Image, Rect, Error, MAX_PIXELS};
+use ecosystem::color::{Rgba8};
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Filter {
+    Nearest,
+    Bilinear,
+}
+
+pub fn crop(source: Image, region: Rect) -> Result[Image, Error] {
+    let bounds = source.bounds();
+    if region.min_x() < bounds.min_x() || region.min_y() < bounds.min_y()
+        || region.max_x() > bounds.max_x()
+        || region.max_y() > bounds.max_y() {
+        return Result::Err(Error::OutOfBounds)
+    }
+    let cropped = source.subimage(region)?;
+    Image::from_pixels(Rect::new(0, 0, region.width(), region.height())?, cropped.pixels())
+}
+
+fn axis(position: isize, source_size: isize, destination_size: isize) -> (
+    isize,
+    isize,
+    isize,
+    isize,
+) {
+    let denominator = 2 * destination_size;
+    let numerator = (2 * position + 1) * source_size - destination_size;
+    if numerator <= 0 {
+        return (0, 0, 0, denominator)
+    }
+    let lower = numerator / denominator;
+    if lower >= source_size - 1 {
+        return (source_size - 1, source_size - 1, 0, denominator)
+    }
+    let result = (lower, lower + 1, numerator % denominator, denominator);
+    result
+}
+
+fn channel(
+    a: u8,
+    b: u8,
+    c: u8,
+    d: u8,
+    x_weight: isize,
+    y_weight: isize,
+    x_scale: isize,
+    y_scale: isize,
+) -> u8 {
+    let top = a.to_isize() * (x_scale - x_weight) + b.to_isize() * x_weight;
+    let bottom = c.to_isize() * (x_scale - x_weight) + d.to_isize() * x_weight;
+    let scale = x_scale * y_scale;
+    ((top * (y_scale - y_weight) + bottom * y_weight + scale / 2) / scale).to_u8()
+}
+
+fn bilinear(source: Image, x: isize, y: isize, width: isize, height: isize) -> Result[Rgba8, Error] {
+    let bounds = source.bounds();
+    let (x0, x1, wx, dx) = axis(x, bounds.width(), width);
+    let (y0, y1, wy, dy) = axis(y, bounds.height(), height);
+    let a = source.at(bounds.min_x() + x0, bounds.min_y() + y0).ok_or(Error::OutOfBounds)?;
+    let b = source.at(bounds.min_x() + x1, bounds.min_y() + y0).ok_or(Error::OutOfBounds)?;
+    let c = source.at(bounds.min_x() + x0, bounds.min_y() + y1).ok_or(Error::OutOfBounds)?;
+    let d = source.at(bounds.min_x() + x1, bounds.min_y() + y1).ok_or(Error::OutOfBounds)?;
+    Rgba8::new(
+        channel(a.red(), b.red(), c.red(), d.red(), wx, wy, dx, dy),
+        channel(a.green(), b.green(), c.green(), d.green(), wx, wy, dx, dy),
+        channel(a.blue(), b.blue(), c.blue(), d.blue(), wx, wy, dx, dy),
+        channel(a.alpha(), b.alpha(), c.alpha(), d.alpha(), wx, wy, dx, dy),
+    ).map_err(|_| Error::InvalidPixel)
+}
+
+pub fn resize(source: Image, width: isize, height: isize, filter: Filter) -> Result[Image, Error] {
+    let bounds = Rect::new(0, 0, width, height)?;
+    if width * height > MAX_PIXELS {
+        return Result::Err(Error::PixelLimit)
+    }
+    if bounds.is_empty() {
+        return Image::new(bounds)
+    }
+    let original = source.bounds();
+    if original.is_empty() {
+        return Result::Err(Error::InvalidRectangle)
+    }
+    let pixels: Vec[Rgba8] = Vec::with_capacity(width * height);
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = match filter {
+                Nearest => {
+                    let sx = (2 * x + 1) * original.width() / (2 * width);
+                    let sy = (2 * y + 1) * original.height() / (2 * height);
+                    source.at(original.min_x() + sx, original.min_y() + sy).ok_or(
+                        Error::OutOfBounds,
+                    )?
+                },
+                Bilinear => bilinear(source, x, y, width, height)?,
+            };
+            pixels.push(pixel);
+        }
+    }
+    Image::from_pixels(bounds, pixels)
+}

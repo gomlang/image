@@ -1,0 +1,44 @@
+package native;
+
+use std::ffi;
+
+#[go_ffi("example.com/goml-ecosystem/image/adapter", "GomlBind_decode_jpeg")]
+pub extern fn decode_jpeg(p0: ffi::String, p1: isize, p2: isize, p3: isize, p4: isize) -> (
+    ffi::String,
+    isize,
+    isize,
+    ffi::String,
+);
+
+#[go_ffi("example.com/goml-ecosystem/image/adapter", "GomlBind_decode_webp")]
+pub extern fn decode_webp(p0: ffi::String, p1: isize, p2: isize, p3: isize, p4: isize) -> (
+    ffi::String,
+    isize,
+    isize,
+    ffi::String,
+);
+
+#[go_ffi("example.com/goml-ecosystem/image/adapter", "GomlBind_encode_jpeg")]
+pub extern fn encode_jpeg(
+    p0: ffi::String,
+    p1: isize,
+    p2: isize,
+    p3: isize,
+    p4: isize,
+    p5: isize,
+    p6: isize,
+    p7: isize,
+    p8: u32,
+) -> (ffi::String, ffi::String);
+
+#[go_ffi("example.com/goml-ecosystem/image/adapter", "GomlBind_encode_webp")]
+pub extern fn encode_webp(
+    p0: ffi::String,
+    p1: isize,
+    p2: isize,
+    p3: isize,
+    p4: isize,
+    p5: isize,
+    p6: isize,
+    p7: isize,
+) -> (ffi::String, ffi::String);
