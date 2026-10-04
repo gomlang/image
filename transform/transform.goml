@@ -55,10 +55,14 @@ fn channel(
     ((top * (y_scale - y_weight) + bottom * y_weight + scale / 2) / scale).to_u8()
 }
 
-fn bilinear(source: Image, x: isize, y: isize, width: isize, height: isize) -> Result[Rgba8, Error] {
+fn bilinear(
+    source: Image,
+    horizontal: (isize, isize, isize, isize),
+    vertical: (isize, isize, isize, isize),
+) -> Result[Rgba8, Error] {
     let bounds = source.bounds();
-    let (x0, x1, wx, dx) = axis(x, bounds.width(), width);
-    let (y0, y1, wy, dy) = axis(y, bounds.height(), height);
+    let (x0, x1, wx, dx) = horizontal;
+    let (y0, y1, wy, dy) = vertical;
     let a = source.at(bounds.min_x() + x0, bounds.min_y() + y0).ok_or(Error::OutOfBounds)?;
     let b = source.at(bounds.min_x() + x1, bounds.min_y() + y0).ok_or(Error::OutOfBounds)?;
     let c = source.at(bounds.min_x() + x0, bounds.min_y() + y1).ok_or(Error::OutOfBounds)?;
@@ -84,20 +88,31 @@ pub fn resize(source: Image, width: isize, height: isize, filter: Filter) -> Res
         return Result::Err(Error::InvalidRectangle)
     }
     let pixels: Vec[Rgba8] = Vec::with_capacity(width * height);
-    for y in 0..height {
-        for x in 0..width {
-            let pixel = match filter {
-                Nearest => {
+    match filter {
+        Nearest => {
+            for y in 0..height {
+                let sy = (2 * y + 1) * original.height() / (2 * height);
+                for x in 0..width {
                     let sx = (2 * x + 1) * original.width() / (2 * width);
-                    let sy = (2 * y + 1) * original.height() / (2 * height);
-                    source.at(original.min_x() + sx, original.min_y() + sy).ok_or(
+                    let pixel = source.at(original.min_x() + sx, original.min_y() + sy).ok_or(
                         Error::OutOfBounds,
-                    )?
-                },
-                Bilinear => bilinear(source, x, y, width, height)?,
-            };
-            pixels.push(pixel);
-        }
+                    )?;
+                    pixels.push(pixel);
+                }
+            }
+        },
+        Bilinear => {
+            let horizontal = Vec::with_capacity(width);
+            for x in 0..width {
+                horizontal.push(axis(x, original.width(), width));
+            }
+            for y in 0..height {
+                let vertical = axis(y, original.height(), height);
+                for mapping in horizontal {
+                    pixels.push(bilinear(source, mapping, vertical)?);
+                }
+            }
+        },
     }
     Image::from_pixels(bounds, pixels)
 }

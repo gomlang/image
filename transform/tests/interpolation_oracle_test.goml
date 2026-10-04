@@ -1,0 +1,119 @@
+package tests;
+
+use ecosystem::image::{Image, Rect};
+use ecosystem::image::transform::{resize, Filter};
+use ecosystem::color::{Rgba8};
+use std::testing;
+
+fn distance(left: isize, right: isize) -> isize {
+    if left < right {
+        right - left
+    } else {
+        left - right
+    }
+}
+
+fn center(position: isize, source_size: isize, destination_size: isize) -> isize {
+    let value = (2 * position + 1) * source_size - destination_size;
+    let last = (source_size - 1) * 2 * destination_size;
+    if value < 0 {
+        return 0
+    }
+    if value > last {
+        return last
+    }
+    value
+}
+
+fn basis_sample(source: Image, width: isize, height: isize, x: isize, y: isize) -> Rgba8 {
+    // Sum the triangular interpolation basis over every source pixel without
+    // selecting neighbors or computing lower/upper sample indexes.
+    let bounds = source.bounds();
+    let x_scale = 2 * width;
+    let y_scale = 2 * height;
+    let cx = center(x, bounds.width(), width);
+    let cy = center(y, bounds.height(), height);
+    let mut red = 0;
+    let mut green = 0;
+    let mut blue = 0;
+    let mut alpha = 0;
+    for sy in 0..bounds.height() {
+        for sx in 0..bounds.width() {
+            let dx = distance(cx, sx * x_scale);
+            let dy = distance(cy, sy * y_scale);
+            if dx < x_scale && dy < y_scale {
+                let weight = (x_scale - dx) * (y_scale - dy);
+                let value = testing::expect_some(
+                    source.at(bounds.min_x() + sx, bounds.min_y() + sy),
+                    "oracle pixel",
+                );
+                red += value.red().to_isize() * weight;
+                green += value.green().to_isize() * weight;
+                blue += value.blue().to_isize() * weight;
+                alpha += value.alpha().to_isize() * weight;
+            }
+        }
+    }
+    let scale = x_scale * y_scale;
+    testing::expect_ok(
+        Rgba8::new(
+            ((red + scale / 2) / scale).to_u8(),
+            ((green + scale / 2) / scale).to_u8(),
+            ((blue + scale / 2) / scale).to_u8(),
+            ((alpha + scale / 2) / scale).to_u8(),
+        ),
+        "oracle sample",
+    )
+}
+
+fn patterned_image(width: isize, height: isize) -> Image {
+    let pixels = Vec::new();
+    for y in 0..height {
+        for x in 0..width {
+            let alpha = (37 + x * 53 + y * 31) % 256;
+            pixels.push(
+                testing::expect_ok(
+                    Rgba8::new(
+                        ((x * 19 + y * 73) % (alpha + 1)).to_u8(),
+                        ((x * 47 + y * 11) % (alpha + 1)).to_u8(),
+                        ((x * 7 + y * 43) % (alpha + 1)).to_u8(),
+                        alpha.to_u8(),
+                    ),
+                    "pattern pixel",
+                ),
+            );
+        }
+    }
+    testing::expect_ok(
+        Image::from_pixels(
+            testing::expect_ok(Rect::new(-2, 3, width - 2, height + 3), "pattern bounds"),
+            pixels,
+        ),
+        "pattern image",
+    )
+}
+
+#[test]
+fn bilinear_matches_full_grid_interpolation_basis_for_small_images() -> () {
+    for source_height in 1..5 {
+        for source_width in 1..6 {
+            let source = patterned_image(source_width, source_height);
+            for height in 1..7 {
+                for width in 1..8 {
+                    let actual = testing::expect_ok(
+                        resize(source, width, height, Filter::Bilinear),
+                        "bilinear image",
+                    );
+                    for y in 0..height {
+                        for x in 0..width {
+                            testing::assert_eq(
+                                testing::expect_some(actual.at(x, y), "result sample"),
+                                basis_sample(source, width, height, x, y),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

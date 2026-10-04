@@ -25,6 +25,11 @@ dark color fringes. All calculations use encoded sRGB values, without linear-lig
 conversion. Bilinear resize is not an area or antialiasing filter for substantial
 downsampling; aspect ratio is selected by the caller.
 
+Bilinear resize computes horizontal sample coordinates and weights once and
+reuses them across rows. Vertical weights are computed once per row, so coordinate
+mapping takes O(width + height) work and O(width) extra storage. Interpolation and
+output storage remain O(width × height).
+
 ## Lossless orientation
 
 `orient(source, Orientation)` returns an independent image at `(0, 0)` without
