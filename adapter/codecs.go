@@ -223,7 +223,8 @@ func EncodeWebP(data string, width, height, maxDimension, maxPixels, maxDecoded,
 	if err != nil {
 		return "", err.Error()
 	}
-	straight := image.NewNRGBA(img.Bounds())
+	// sourceImage owns this pixel copy, so conversion can reuse it in place.
+	straight := &image.NRGBA{Pix: img.Pix, Stride: img.Stride, Rect: img.Rect}
 	for i := 0; i < len(img.Pix); i += 4 {
 		alpha := uint32(img.Pix[i+3])
 		straight.Pix[i+3] = byte(alpha)
