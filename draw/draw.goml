@@ -2,6 +2,7 @@ package draw;
 
 use ecosystem::image::{Image, Rect, Error, MAX_COORDINATE};
 use ecosystem::color::{Rgba8};
+use std::cmp;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Op {
@@ -33,36 +34,40 @@ pub fn draw(destination: Image, region: Rect, source: Image, source_origin: (isi
         return Result::Err(Error::OutOfBounds)
     }
     let clipped = region.intersection(destination.bounds());
-    let source_pixels: Vec[Option[Rgba8]] = Vec::with_capacity(clipped.width() * clipped.height());
-    for y in clipped.min_y()..clipped.max_y() {
-        for x in clipped.min_x()..clipped.max_x() {
-            let source_x = source_origin.0 + (x - region.min_x());
-            let source_y = source_origin.1 + (y - region.min_y());
-            source_pixels.push(source.at(source_x, source_y));
+    let source_bounds = source.bounds();
+    // Intersect the translated source bounds in destination coordinates.
+    let offset_x = region.min_x() - source_origin.0;
+    let offset_y = region.min_y() - source_origin.1;
+    let min_x = cmp::max(clipped.min_x(), source_bounds.min_x() + offset_x);
+    let min_y = cmp::max(clipped.min_y(), source_bounds.min_y() + offset_y);
+    let max_x = cmp::min(clipped.max_x(), source_bounds.max_x() + offset_x);
+    let max_y = cmp::min(clipped.max_y(), source_bounds.max_y() + offset_y);
+    if min_x >= max_x || min_y >= max_y {
+        return Result::Ok(0)
+    }
+    let count = (max_x - min_x) * (max_y - min_y);
+    let source_pixels: Vec[Rgba8] = Vec::with_capacity(count);
+    for y in min_y..max_y {
+        for x in min_x..max_x {
+            source_pixels.push(source.at(x - offset_x, y - offset_y).ok_or(Error::OutOfBounds)?);
         }
     }
     let mut index = 0;
-    let mut written = 0;
-    for y in clipped.min_y()..clipped.max_y() {
-        for x in clipped.min_x()..clipped.max_x() {
-            match source_pixels[index] {
-                Some(pixel) => {
-                    let result = match op {
-                        Op::Src => pixel,
-                        Op::Over => {
-                            let underlying = destination.at(x, y).ok_or(Error::OutOfBounds)?;
-                            blend(pixel, underlying)?
-                        },
-                    };
-                    destination.set(x, y, result)?;
-                    written += 1;
+    for y in min_y..max_y {
+        for x in min_x..max_x {
+            let pixel = source_pixels[index];
+            let result = match op {
+                Op::Src => pixel,
+                Op::Over => {
+                    let underlying = destination.at(x, y).ok_or(Error::OutOfBounds)?;
+                    blend(pixel, underlying)?
                 },
-                None => {},
-            }
+            };
+            destination.set(x, y, result)?;
             index += 1;
         }
     }
-    Result::Ok(written)
+    Result::Ok(count)
 }
 
 pub fn copy(destination: Image, region: Rect, source: Image, source_origin: (isize, isize)) -> Result[

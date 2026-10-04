@@ -14,3 +14,6 @@ source_alpha) / 255)`, with halfway values rounded upward. This matches the
 library's explicit 8-bit pixel representation; it is not a linear-light
 composite. The source region is read into bounded temporary storage before
 any writes, so overlapping self-copy and self-over use original source pixels.
+Both image bounds are applied before allocating this temporary buffer. Work and
+temporary storage are proportional to the number of pixels written, and a draw
+with no source/destination overlap returns without a pixel buffer allocation.
