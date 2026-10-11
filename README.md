@@ -42,7 +42,7 @@ origin `(0, 0)` on encode. Decode rejects invalid dimensions, size mismatches,
 trailing data and channels above alpha before constructing an image. This is
 an internal interchange format, not PNG, JPEG or a registered media type.
 
-`(cd ../verification && just ecosystem-test image)` runs library and example format,
+`(cd ../workflows && just ecosystem-test image)` runs library and example format,
 build, tests, cached-build and executable checks.
 
 ## Native adapter setup
@@ -83,13 +83,13 @@ outside the current API.
 
 ## Development and examples
 
-Requires the [current GoML toolchain](https://github.com/gomlang/verification/blob/main/ci/toolchain.json) with unversioned registry support. The `examples/basic/` example shares the root manifest and its dependencies. From the library root, run:
+Requires the [current GoML toolchain](https://github.com/gomlang/workflows/blob/main/ci/toolchain.json) with unversioned registry support. The `examples/basic/` example shares the root manifest and its dependencies. From the library root, run:
 
 ```sh
 goml run --example basic
 goml test
 go test ./adapter
-(cd ../verification && just ecosystem-test image)
+(cd ../workflows && just ecosystem-test image)
 ```
 
-`goml test` builds the example and runs its tests. `(cd ../verification && just ecosystem-test image)` runs the library-specific smoke and compatibility checks.
+`goml test` builds the example and runs its tests. `(cd ../workflows && just ecosystem-test image)` runs the library-specific smoke and compatibility checks.
