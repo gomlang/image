@@ -10,8 +10,8 @@ It depends on `ecosystem::color` for `Rgba8`. The nested
 
 ```toml
 [dependencies]
-"ecosystem::image" = "0.1.0"
-"ecosystem::color" = "0.1.0"
+"ecosystem::image" = true
+"ecosystem::color" = true
 ```
 
 `Rect::new(min_x, min_y, max_x, max_y)` uses half-open coordinates. Each
@@ -63,14 +63,15 @@ go 1.26.0
 GoML resolves the adapter from the selected image module and manages its Go
 requirement and source replacement. It does not modify the consumer's `go.mod`.
 External Go dependencies must be downloaded before offline FFI validation. For
-this repository, run `go mod download`. A new consumer can prime the shared Go
+this repository, run `go mod download all`. CI prepares native dependencies
+automatically; the local ecosystem verifier expects the cache to be populated. A new consumer can prime the shared Go
 module cache using:
 
 ```sh
 go mod download github.com/HugoSmits86/nativewebp@v1.3.0 golang.org/x/image@v0.46.0
 ```
 
-`goml verify` creates the example consumer's minimal `go.mod` automatically.
+The example shares the root manifest and native Go module.
 Generated FFI bindings are owned by `bindings.json`; regenerate them with
 `goml bind-go bindings.json`. Do not edit generated files.
 
@@ -82,13 +83,13 @@ outside the current API.
 
 ## Development and examples
 
-Requires GoML 0.1.56 or newer. The `examples/basic/` example shares the root manifest and its dependencies. From the library root, run:
+Requires the [current GoML toolchain](https://github.com/gomlang/verification/blob/main/ci/toolchain.json) with unversioned registry support. The `examples/basic/` example shares the root manifest and its dependencies. From the library root, run:
 
 ```sh
 goml run --example basic
 goml test
 go test ./adapter
-goml verify --timeout 300s
+(cd ../verification && just ecosystem-test image)
 ```
 
-`goml test` builds the example and runs its tests. `goml verify` repeats the example checks as an independent module against an isolated registry snapshot. `(cd ../verification && just ecosystem-test image)` also retains the library-specific smoke and compatibility checks.
+`goml test` builds the example and runs its tests. `(cd ../verification && just ecosystem-test image)` runs the library-specific smoke and compatibility checks.
