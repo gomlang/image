@@ -62,7 +62,7 @@ go 1.26.0
 
 GoML resolves the adapter from the selected image module and manages its Go
 requirement and source replacement. It does not modify the consumer's `go.mod`.
-External Go dependencies must be downloaded before offline FFI validation. For
+External Go dependencies must be downloaded before an offline native build. For
 this repository, run `go mod download all`. CI prepares native dependencies
 automatically; the local ecosystem verifier expects the cache to be populated. A new consumer can prime the shared Go
 module cache using:
@@ -72,8 +72,9 @@ go mod download github.com/HugoSmits86/nativewebp@v1.3.0 golang.org/x/image@v0.4
 ```
 
 The example shares the root manifest and native Go module.
-Generated FFI bindings are owned by `bindings.json`; regenerate them with
-`goml bind-go bindings.json`. Do not edit generated files.
+The explicit GoML declarations in `native/bindings.goml` call the Go bridge in
+`adapter/bindings.go`. Maintain these signatures together; the final Go build
+checks their compatibility.
 
 The new codecs share [`codecs::Limits`](codecs/README.md). They preserve the
 existing `Image`, `Rect`, `Error`, `Codec`, draw and PNG APIs. JPEG explicitly
