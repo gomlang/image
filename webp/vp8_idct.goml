@@ -1,0 +1,140 @@
+package webp;
+
+use std::bytes;
+
+fn vp8_clip8(i: isize) -> isize {
+    let mut i = i;
+    if (i < 0) {
+        return 0;
+    }
+    if (i > 255) {
+        return 255;
+    }
+    return (i);
+}
+
+fn vp8_inverse_dct4(z: Ref[Vp8Decoder], y: isize, x: isize, coeff_base: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut coeff_base = coeff_base;
+    let mut c1: isize = 85627;
+    let mut c2: isize = 35468;
+    let mut m: [[isize; 4]; 4] = [[0; 4]; 4];
+    {
+        let mut i = 0;
+        while (i < 4) {
+            let mut a = ((z.get().coeff[(coeff_base + 0)]) + (z.get().coeff[(coeff_base + 8)]));
+            let mut b = ((z.get().coeff[(coeff_base + 0)]) - (z.get().coeff[(coeff_base + 8)]));
+            let mut c = (((((z.get().coeff[(coeff_base + 4)]) * c2)) >> 16)
+                - ((((z.get().coeff[(coeff_base + 12)]) * c1)) >> 16));
+            let mut d = (((((z.get().coeff[(coeff_base + 4)]) * c1)) >> 16)
+                + ((((z.get().coeff[(coeff_base + 12)]) * c2)) >> 16));
+            m[i][0] = (a + d);
+            m[i][1] = (b + c);
+            m[i][2] = (b - c);
+            m[i][3] = (a - d);
+            coeff_base = (coeff_base + 1);
+            i = (i + 1);
+        }
+    };
+    {
+        let mut j = 0;
+        while (j < 4) {
+            let mut dc = (m[0][j] + 4);
+            let mut a = (dc + m[2][j]);
+            let mut b = (dc - m[2][j]);
+            let mut c = ((((m[1][j] * c2)) >> 16) - (((m[3][j] * c1)) >> 16));
+            let mut d = ((((m[1][j] * c1)) >> 16) + (((m[3][j] * c2)) >> 16));
+            z.get().ybr[(y + j)][(x + 0)] = vp8_clip8(
+                ((z.get().ybr[(y + j)][(x + 0)]) + (((a + d)) >> 3)),
+            );
+            z.get().ybr[(y + j)][(x + 1)] = vp8_clip8(
+                ((z.get().ybr[(y + j)][(x + 1)]) + (((b + c)) >> 3)),
+            );
+            z.get().ybr[(y + j)][(x + 2)] = vp8_clip8(
+                ((z.get().ybr[(y + j)][(x + 2)]) + (((b - c)) >> 3)),
+            );
+            z.get().ybr[(y + j)][(x + 3)] = vp8_clip8(
+                ((z.get().ybr[(y + j)][(x + 3)]) + (((a - d)) >> 3)),
+            );
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_inverse_dct4_dc_only(z: Ref[Vp8Decoder], y: isize, x: isize, coeff_base: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut coeff_base = coeff_base;
+    let mut dc = ((((z.get().coeff[(coeff_base + 0)]) + 4)) >> 3);
+    {
+        let mut j = 0;
+        while (j < 4) {
+            {
+                let mut i = 0;
+                while (i < 4) {
+                    z.get().ybr[(y + j)][(x + i)] = vp8_clip8(
+                        ((z.get().ybr[(y + j)][(x + i)]) + dc),
+                    );
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_inverse_dct8(z: Ref[Vp8Decoder], y: isize, x: isize, coeff_base: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut coeff_base = coeff_base;
+    vp8_inverse_dct4(z, (y + 0), (x + 0), (coeff_base + (0 * 16)));
+    vp8_inverse_dct4(z, (y + 0), (x + 4), (coeff_base + (1 * 16)));
+    vp8_inverse_dct4(z, (y + 4), (x + 0), (coeff_base + (2 * 16)));
+    vp8_inverse_dct4(z, (y + 4), (x + 4), (coeff_base + (3 * 16)));
+}
+
+fn vp8_inverse_dct8_dc_only(z: Ref[Vp8Decoder], y: isize, x: isize, coeff_base: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut coeff_base = coeff_base;
+    vp8_inverse_dct4_dc_only(z, (y + 0), (x + 0), (coeff_base + (0 * 16)));
+    vp8_inverse_dct4_dc_only(z, (y + 0), (x + 4), (coeff_base + (1 * 16)));
+    vp8_inverse_dct4_dc_only(z, (y + 4), (x + 0), (coeff_base + (2 * 16)));
+    vp8_inverse_dct4_dc_only(z, (y + 4), (x + 4), (coeff_base + (3 * 16)));
+}
+
+fn vp8_inverse_wht16(d: Ref[Vp8Decoder]) -> () {
+    let mut m: [isize; 16] = [0; 16];
+    {
+        let mut i = 0;
+        while (i < 4) {
+            let mut a0 = ((d.get().coeff[((384 + 0) + i)]) + (d.get().coeff[((384 + 12) + i)]));
+            let mut a1 = ((d.get().coeff[((384 + 4) + i)]) + (d.get().coeff[((384 + 8) + i)]));
+            let mut a2 = ((d.get().coeff[((384 + 4) + i)]) - (d.get().coeff[((384 + 8) + i)]));
+            let mut a3 = ((d.get().coeff[((384 + 0) + i)]) - (d.get().coeff[((384 + 12) + i)]));
+            m[(0 + i)] = (a0 + a1);
+            m[(8 + i)] = (a0 - a1);
+            m[(4 + i)] = (a3 + a2);
+            m[(12 + i)] = (a3 - a2);
+            i = (i + 1);
+        }
+    };
+    let mut out = 0;
+    {
+        let mut i = 0;
+        while (i < 4) {
+            let mut dc = (m[(0 + (i * 4))] + 3);
+            let mut a0 = (dc + m[(3 + (i * 4))]);
+            let mut a1 = (m[(1 + (i * 4))] + m[(2 + (i * 4))]);
+            let mut a2 = (m[(1 + (i * 4))] - m[(2 + (i * 4))]);
+            let mut a3 = (dc - m[(3 + (i * 4))]);
+            d.get().coeff[(out + 0)] = vp8_i16((((a0 + a1)) >> 3));
+            d.get().coeff[(out + 16)] = vp8_i16((((a3 + a2)) >> 3));
+            d.get().coeff[(out + 32)] = vp8_i16((((a0 - a1)) >> 3));
+            d.get().coeff[(out + 48)] = vp8_i16((((a3 - a2)) >> 3));
+            out = (out + 64);
+            i = (i + 1);
+        }
+    };
+}

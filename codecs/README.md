@@ -1,7 +1,7 @@
 # codecs
 
 `ecosystem::image::codecs::Limits` provides shared allocation and input/output
-limits for the native JPEG and WebP adapters. PNG retains its existing limits.
+limits for the GoML JPEG and WebP codecs. PNG retains its existing limits.
 
 | Field | Standard value | Maximum accepted value |
 | --- | --- | --- |
@@ -17,13 +17,13 @@ the final packed RGBA8 representation, four bytes per pixel. Header dimensions
 are checked against dimension, pixel and decoded-byte limits before full decoding.
 
 These limits bound input, final output and pixel counts, not total process memory
-or elapsed CPU time. Backends allocate their own bounded-by-image-size working
-buffers, and the Go/GoML bridge copies pixel buffers. In particular the WebP
-encoder creates an internal compressed stream before the bounded output writer
-receives it. There is no cancellation or exact workspace-byte budget. Applications
+or elapsed CPU time. The codecs allocate image-sized working buffers and bounded
+entropy tables. Encoders check their output budget while writing compressed
+bytes. There is no cancellation or exact workspace-byte budget. Applications
 processing untrusted images should select small limits and constrain concurrent
-codec calls. Unexpected backend panics are converted to recoverable codec errors;
-process-level out-of-memory failures are outside that guarantee.
+codec calls. Invalid streams return recoverable codec errors; process-level
+out-of-memory failures are outside that guarantee.
 
-The `pack`, `unpack` and `encoded` functions implement the raw bridge used by the
-codec packages; consumers normally use `jpeg` or `webp` rather than these helpers.
+The legacy `pack`, `unpack` and `encoded` helpers retain their public signatures
+using `std::ffi::String` for compatibility. They convert raw pixel and error
+buffers; the JPEG and WebP implementations do not use them or external bindings.

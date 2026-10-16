@@ -1,0 +1,542 @@
+package webp;
+
+use ecosystem::image::{Error};
+use std::bytes;
+
+struct LBits {
+    data: bytes::Bytes,
+    offset: Ref[isize],
+    bits: Ref[u32],
+    count: Ref[isize],
+}
+
+impl LBits {
+    fn new(data: bytes::Bytes) -> LBits {
+        LBits { data, offset: Ref::new(0), bits: Ref::new(0), count: Ref::new(0) }
+    }
+
+    fn read(self: LBits, n: isize) -> Result[isize, Error] {
+        let mut bits = self.bits.get();
+        let mut count = self.count.get();
+        let mut offset = self.offset.get();
+        while count < n {
+            if offset >= self.data.len() {
+                return Result::Err(Error::Codec("truncated VP8L bitstream"))
+            }
+            bits |= self.data.get(offset).to_u32() << count;
+            count += 8;
+            offset += 1;
+        }
+        let value = bits & ((1.to_u32() << n) - 1);
+        self.bits.set(bits >> n);
+        self.count.set(count - n);
+        self.offset.set(offset);
+        Result::Ok(value.to_isize())
+    }
+}
+
+struct LTree {
+    left: Vec[isize],
+    right: Vec[isize],
+    symbols: Vec[isize],
+}
+
+fn l_zeros(count: isize) -> Vec[isize] {
+    let values = Vec::with_capacity(count);
+    for _ in 0..count {
+        values.push(0);
+    }
+    values
+}
+
+fn l_pixels(count: isize) -> Vec[u32] {
+    let values = Vec::with_capacity(count);
+    for _ in 0..count {
+        values.push(0);
+    }
+    values
+}
+
+fn l_tree(lengths: Vec[isize]) -> Result[LTree, Error] {
+    let counts = l_zeros(16);
+    let mut nonzero = 0;
+    let mut single = 0;
+    for i in 0..lengths.len() {
+        let length = lengths[i];
+        if length < 0 || length > 15 {
+            return Result::Err(Error::Codec("invalid VP8L Huffman code length"))
+        }
+        if length != 0 {
+            counts[length] += 1;
+            nonzero += 1;
+            single = i;
+        }
+    }
+    if nonzero == 0 {
+        return Result::Err(Error::Codec("empty VP8L Huffman tree"))
+    }
+    let tree = LTree {
+        left: Vec::from_array([-1]),
+        right: Vec::from_array([-1]),
+        symbols: Vec::from_array([-1]),
+    };
+    if nonzero == 1 {
+        tree.symbols[0] = single;
+        return Result::Ok(tree)
+    }
+    let mut remaining = 1;
+    let codes = l_zeros(16);
+    let mut code = 0;
+    for length in 1..16 {
+        remaining = 2 * remaining - counts[length];
+        if remaining < 0 {
+            return Result::Err(Error::Codec("oversubscribed VP8L Huffman tree"))
+        }
+        code = (code + counts[length - 1]) << 1;
+        codes[length] = code;
+    }
+    if remaining != 0 {
+        return Result::Err(Error::Codec("incomplete VP8L Huffman tree"))
+    }
+    for symbol in 0..lengths.len() {
+        let length = lengths[symbol];
+        if length == 0 {
+            continue;
+        }
+        let value = codes[length];
+        codes[length] += 1;
+        let mut node = 0;
+        let mut bit = length;
+        while bit > 0 {
+            bit -= 1;
+            let right = (value >> bit) & 1 != 0;
+            let mut next = if right {
+                tree.right[node]
+            } else {
+                tree.left[node]
+            };
+            if next < 0 {
+                next = tree.symbols.len();
+                tree.left.push(-1);
+                tree.right.push(-1);
+                tree.symbols.push(-1);
+                if right {
+                    tree.right[node] = next;
+                } else {
+                    tree.left[node] = next;
+                }
+            }
+            node = next;
+        }
+        tree.symbols[node] = symbol;
+    }
+    Result::Ok(tree)
+}
+
+fn l_symbol(reader: LBits, tree: LTree) -> Result[isize, Error] {
+    let mut node = 0;
+    for _ in 0..16 {
+        if node < 0 || node >= tree.symbols.len() {
+            return Result::Err(Error::Codec("invalid VP8L Huffman symbol"))
+        }
+        if tree.symbols[node] >= 0 {
+            return Result::Ok(tree.symbols[node])
+        }
+        node = if reader.read(1)? != 0 {
+            tree.right[node]
+        } else {
+            tree.left[node]
+        };
+    }
+    Result::Err(Error::Codec("invalid VP8L Huffman code"))
+}
+
+fn l_read_tree(reader: LBits, alphabet: isize) -> Result[LTree, Error] {
+    let lengths = l_zeros(alphabet);
+    if reader.read(1)? != 0 {
+        let count = reader.read(1)? + 1;
+        let first_bits = 7 * reader.read(1)? + 1;
+        let first = reader.read(first_bits)?;
+        if first >= alphabet {
+            return Result::Err(Error::Codec("invalid VP8L Huffman symbol"))
+        }
+        lengths[first] = 1;
+        if count == 2 {
+            let second = reader.read(8)?;
+            if second >= alphabet || first == second {
+                return Result::Err(Error::Codec("invalid VP8L simple Huffman tree"))
+            }
+            return Result::Ok(
+                LTree {
+                    left: Vec::from_array([1, -1, -1]),
+                    right: Vec::from_array([2, -1, -1]),
+                    symbols: Vec::from_array([-1, first, second]),
+                },
+            )
+        }
+        return l_tree(lengths)
+    }
+    let count = reader.read(4)? + 4;
+    let order = [17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    let code_lengths = l_zeros(19);
+    for i in 0..count {
+        code_lengths[order[i]] = reader.read(3)?;
+    }
+    let codes = l_tree(code_lengths)?;
+    let mut maximum = alphabet;
+    if reader.read(1)? != 0 {
+        let bits = 2 + 2 * reader.read(3)?;
+        maximum = reader.read(bits)? + 2;
+        if maximum > alphabet {
+            return Result::Err(Error::Codec("invalid VP8L code length count"))
+        }
+    }
+    let mut previous = 8;
+    let mut index = 0;
+    while index < alphabet && maximum > 0 {
+        maximum -= 1;
+        let symbol = l_symbol(reader, codes)?;
+        if symbol < 16 {
+            lengths[index] = symbol;
+            index += 1;
+            if symbol != 0 {
+                previous = symbol;
+            }
+        } else {
+            let repeat_bits = [2, 3, 7];
+            let repeat_base = [3, 3, 11];
+            let count = reader.read(repeat_bits[symbol - 16])? + repeat_base[symbol - 16];
+            if count > alphabet - index {
+                return Result::Err(Error::Codec("invalid VP8L code length repeat"))
+            }
+            let value = if symbol == 16 {
+                previous
+            } else {
+                0
+            };
+            for _ in 0..count {
+                lengths[index] = value;
+                index += 1;
+            }
+        }
+    }
+    l_tree(lengths)
+}
+
+fn l_tiles(size: isize, bits: isize) -> isize {
+    (size + (1 << bits) - 1) >> bits
+}
+
+fn l_parameter(reader: LBits, symbol: isize) -> Result[isize, Error] {
+    if symbol < 4 {
+        return Result::Ok(symbol + 1)
+    }
+    let bits = (symbol - 2) >> 1;
+    Result::Ok(((2 + (symbol & 1)) << bits) + reader.read(bits)? + 1)
+}
+
+fn l_distance(width: isize, code: isize) -> isize {
+    let table = [
+        0x18,
+        0x07,
+        0x17,
+        0x19,
+        0x28,
+        0x06,
+        0x27,
+        0x29,
+        0x16,
+        0x1a,
+        0x26,
+        0x2a,
+        0x38,
+        0x05,
+        0x37,
+        0x39,
+        0x15,
+        0x1b,
+        0x36,
+        0x3a,
+        0x25,
+        0x2b,
+        0x48,
+        0x04,
+        0x47,
+        0x49,
+        0x14,
+        0x1c,
+        0x35,
+        0x3b,
+        0x46,
+        0x4a,
+        0x24,
+        0x2c,
+        0x58,
+        0x45,
+        0x4b,
+        0x34,
+        0x3c,
+        0x03,
+        0x57,
+        0x59,
+        0x13,
+        0x1d,
+        0x56,
+        0x5a,
+        0x23,
+        0x2d,
+        0x44,
+        0x4c,
+        0x55,
+        0x5b,
+        0x33,
+        0x3d,
+        0x68,
+        0x02,
+        0x67,
+        0x69,
+        0x12,
+        0x1e,
+        0x66,
+        0x6a,
+        0x22,
+        0x2e,
+        0x54,
+        0x5c,
+        0x43,
+        0x4d,
+        0x65,
+        0x6b,
+        0x32,
+        0x3e,
+        0x78,
+        0x01,
+        0x77,
+        0x79,
+        0x53,
+        0x5d,
+        0x11,
+        0x1f,
+        0x64,
+        0x6c,
+        0x42,
+        0x4e,
+        0x76,
+        0x7a,
+        0x21,
+        0x2f,
+        0x75,
+        0x7b,
+        0x31,
+        0x3f,
+        0x63,
+        0x6d,
+        0x52,
+        0x5e,
+        0x00,
+        0x74,
+        0x7c,
+        0x41,
+        0x4f,
+        0x10,
+        0x20,
+        0x62,
+        0x6e,
+        0x30,
+        0x73,
+        0x7d,
+        0x51,
+        0x5f,
+        0x40,
+        0x72,
+        0x7e,
+        0x61,
+        0x6f,
+        0x50,
+        0x71,
+        0x7f,
+        0x60,
+        0x70,
+    ];
+    if code > 120 {
+        return code - 120
+    }
+    let value = table[code - 1];
+    let distance = (value >> 4) * width + 8 - (value & 15);
+    if distance < 1 {
+        1
+    } else {
+        distance
+    }
+}
+
+fn l_decode_pixels(reader: LBits, width: isize, height: isize, top: bool) -> Result[Vec[u32], Error] {
+    let mut cache_bits = 0;
+    if reader.read(1)? != 0 {
+        cache_bits = reader.read(4)?;
+        if cache_bits < 1 || cache_bits > 11 {
+            return Result::Err(Error::Codec("invalid VP8L color cache"))
+        }
+    }
+    let cache = l_pixels(
+        if cache_bits == 0 {
+            0
+        } else {
+            1 << cache_bits
+        },
+    );
+    let mut tile_bits = 0;
+    let mut meta: Vec[u32] = Vec::new();
+    let mut maximum = 0;
+    if top && reader.read(1)? != 0 {
+        tile_bits = reader.read(3)? + 2;
+        meta = l_decode_pixels(reader, l_tiles(width, tile_bits), l_tiles(height, tile_bits), false)?;
+        for pixel in meta {
+            let group = ((pixel >> 8) & 65535).to_isize();
+            if group > maximum {
+                maximum = group;
+            }
+        }
+        if maximum >= 2600 {
+            return Result::Err(Error::Codec("too many VP8L Huffman groups"))
+        }
+    }
+    let used = l_zeros(maximum + 1);
+    if meta.is_empty() {
+        used[0] = 1;
+    }
+    for pixel in meta {
+        used[((pixel >> 8) & 65535).to_isize()] = 1;
+    }
+    let groups: Vec[Vec[LTree]] = Vec::with_capacity(maximum + 1);
+    for group in 0..maximum + 1 {
+        let trees: Vec[LTree] = Vec::with_capacity(5);
+        let alphabets = [280 + cache.len(), 256, 256, 256, 40];
+        for alphabet in alphabets {
+            let tree = l_read_tree(reader, alphabet)?;
+            if used[group] != 0 {
+                trees.push(tree);
+            }
+        }
+        groups.push(trees);
+    }
+    let count = width * height;
+    let output = Vec::with_capacity(count);
+    while output.len() < count {
+        let index = output.len();
+        let group = if tile_bits == 0 {
+            0
+        } else {
+            let tile = ((index / width) >> tile_bits) * l_tiles(width, tile_bits)
+                + ((index % width) >> tile_bits);
+            ((meta[tile] >> 8) & 65535).to_isize()
+        };
+        let trees = groups[group];
+        let green = l_symbol(reader, trees[0])?;
+        if green < 256 {
+            let red = l_symbol(reader, trees[1])?;
+            let blue = l_symbol(reader, trees[2])?;
+            let alpha = l_symbol(reader, trees[3])?;
+            let pixel = (alpha.to_u32() << 24) | (red.to_u32() << 16) | (green.to_u32() << 8)
+                | blue.to_u32();
+            output.push(pixel);
+            if cache_bits != 0 {
+                cache[((pixel * 0x1e35a7bd) >> (32 - cache_bits)).to_isize()] = pixel;
+            }
+        } else if green < 280 {
+            let length = l_parameter(reader, green - 256)?;
+            let distance = l_distance(width, l_parameter(reader, l_symbol(reader, trees[4])?)?);
+            if distance > output.len() || length > count - output.len() {
+                return Result::Err(Error::Codec("invalid VP8L backwards reference"))
+            }
+            for _ in 0..length {
+                let pixel = output[output.len() - distance];
+                output.push(pixel);
+                if cache_bits != 0 {
+                    cache[((pixel * 0x1e35a7bd) >> (32 - cache_bits)).to_isize()] = pixel;
+                }
+            }
+        } else {
+            let index = green - 280;
+            if index >= cache.len() {
+                return Result::Err(Error::Codec("invalid VP8L cache index"))
+            }
+            let pixel = cache[index];
+            output.push(pixel);
+            cache[((pixel * 0x1e35a7bd) >> (32 - cache_bits)).to_isize()] = pixel;
+        }
+    }
+    Result::Ok(output)
+}
+
+struct LTransform {
+    kind: isize,
+    width: isize,
+    bits: isize,
+    pixels: Vec[u32],
+}
+
+fn decode_vp8l(data: bytes::Bytes, width: isize, height: isize, header: bool) -> Result[
+    Vec[u32],
+    Error,
+] {
+    let reader = LBits::new(data);
+    if header {
+        if reader.read(8)? != 47 || reader.read(14)? + 1 != width || reader.read(14)? + 1 != height {
+            return Result::Err(Error::Codec("invalid VP8L header"))
+        }
+        reader.read(1)?;
+        if reader.read(3)? != 0 {
+            return Result::Err(Error::Codec("invalid VP8L version"))
+        }
+    }
+    let transforms: Vec[LTransform] = Vec::new();
+    let mut seen = 0;
+    let mut current_width = width;
+    while reader.read(1)? != 0 {
+        let kind = reader.read(2)?;
+        if (seen & (1 << kind)) != 0 {
+            return Result::Err(Error::Codec("repeated VP8L transform"))
+        }
+        seen |= 1 << kind;
+        let old_width = current_width;
+        let mut bits = 0;
+        let mut pixels: Vec[u32] = Vec::new();
+        if kind == 0 || kind == 1 {
+            bits = reader.read(3)? + 2;
+            pixels = l_decode_pixels(
+                reader,
+                l_tiles(current_width, bits),
+                l_tiles(height, bits),
+                false,
+            )?;
+        } else if kind == 3 {
+            let colors = reader.read(8)? + 1;
+            bits = if colors <= 2 {
+                3
+            } else if colors <= 4 {
+                2
+            } else if colors <= 16 {
+                1
+            } else {
+                0
+            };
+            pixels = l_decode_pixels(reader, colors, 1, false)?;
+            for i in 1..colors {
+                pixels[i] = l_add(pixels[i], pixels[i - 1]);
+            }
+            for _ in colors..256 {
+                pixels.push(0);
+            }
+            current_width = l_tiles(current_width, bits);
+        }
+        transforms.push(LTransform { kind, width: old_width, bits, pixels });
+    }
+    let mut pixels = l_decode_pixels(reader, current_width, height, true)?;
+    let mut index = transforms.len();
+    while index > 0 {
+        index -= 1;
+        pixels = l_inverse(transforms[index], pixels, height)?;
+    }
+    Result::Ok(pixels)
+}

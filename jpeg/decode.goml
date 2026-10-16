@@ -1,0 +1,823 @@
+package jpeg;
+
+use ecosystem::image::{Image, Rect, Error};
+use ecosystem::image::codecs::{Limits};
+use ecosystem::color::{Rgba8};
+use std::bytes;
+
+struct Huffman {
+    counts: Vec[isize],
+    values: Vec[isize],
+    starts: Vec[isize],
+    offsets: Vec[isize],
+}
+
+struct Reader {
+    data: bytes::Bytes,
+    position: Ref[isize],
+    bits: Ref[isize],
+    available: Ref[isize],
+    huffman: Vec[Option[Huffman]],
+    quantization: Vec[Vec[isize]],
+    restart: Ref[isize],
+    adobe: Ref[isize],
+    jfif: Ref[bool],
+}
+
+struct Component {
+    id: isize,
+    horizontal: isize,
+    vertical: isize,
+    quantization: isize,
+    columns: isize,
+    rows: isize,
+    coefficients: Vec[isize],
+    approximation: Vec[isize],
+    scan_quantization: Ref[Vec[isize]],
+}
+
+struct Frame {
+    width: isize,
+    height: isize,
+    horizontal: isize,
+    vertical: isize,
+    columns: isize,
+    rows: isize,
+    progressive: bool,
+    components: Vec[Component],
+}
+
+struct ScanComponent {
+    component: isize,
+    dc: isize,
+    ac: isize,
+}
+
+fn failure(message: string) -> Error {
+    Error::Codec("JPEG: " + message)
+}
+
+fn integers(count: isize, value: isize) -> Vec[isize] {
+    let result = Vec::with_capacity(count);
+    for _ in 0..count {
+        result.push(value);
+    }
+    result
+}
+
+fn zigzag() -> Vec[isize] {
+    Vec::from_array(
+        [
+            0,
+            1,
+            8,
+            16,
+            9,
+            2,
+            3,
+            10,
+            17,
+            24,
+            32,
+            25,
+            18,
+            11,
+            4,
+            5,
+            12,
+            19,
+            26,
+            33,
+            40,
+            48,
+            41,
+            34,
+            27,
+            20,
+            13,
+            6,
+            7,
+            14,
+            21,
+            28,
+            35,
+            42,
+            49,
+            56,
+            57,
+            50,
+            43,
+            36,
+            29,
+            22,
+            15,
+            23,
+            30,
+            37,
+            44,
+            51,
+            58,
+            59,
+            52,
+            45,
+            38,
+            31,
+            39,
+            46,
+            53,
+            60,
+            61,
+            54,
+            47,
+            55,
+            62,
+            63,
+        ],
+    )
+}
+
+fn huffman_table(counts: Vec[isize], values: Vec[isize]) -> Result[Huffman, Error] {
+    let starts = integers(16, 0);
+    let offsets = integers(16, 0);
+    let mut code = 0;
+    let mut offset = 0;
+    for index in 0..16 {
+        starts[index] = code;
+        offsets[index] = offset;
+        code += counts[index];
+        offset += counts[index];
+        if code >= (1 << (index + 1)) {
+            return Result::Err(failure("oversubscribed Huffman table"))
+        }
+        code <<= 1;
+    }
+    if offset == 0 || offset > 256 || offset != values.len() {
+        return Result::Err(failure("invalid Huffman table length"))
+    }
+    Result::Ok(Huffman { counts, values, starts, offsets })
+}
+
+impl Reader {
+    fn new(data: bytes::Bytes) -> Reader {
+        let huffman = Vec::new();
+        for _ in 0..8 {
+            huffman.push(Option::None);
+        }
+        let quantization = Vec::new();
+        for _ in 0..4 {
+            quantization.push(Vec::new());
+        }
+        Reader {
+            data,
+            position: Ref::new(0),
+            bits: Ref::new(0),
+            available: Ref::new(0),
+            huffman,
+            quantization,
+            restart: Ref::new(0),
+            adobe: Ref::new(-1),
+            jfif: Ref::new(false),
+        }
+    }
+
+    fn byte(self: Reader) -> Result[isize, Error] {
+        let offset = self.position.get();
+        if offset >= self.data.len() {
+            return Result::Err(failure("truncated datastream"))
+        }
+        self.position.set(offset + 1);
+        Result::Ok(self.data.get(offset).to_isize())
+    }
+
+    fn word(self: Reader) -> Result[isize, Error] {
+        let high = self.byte()?;
+        Result::Ok((high << 8) | self.byte()?)
+    }
+
+    fn marker(self: Reader) -> Result[isize, Error] {
+        if self.byte()? != 255 {
+            return Result::Err(failure("missing marker prefix"))
+        }
+        let mut marker = self.byte()?;
+        while marker == 255 {
+            marker = self.byte()?;
+        }
+        if marker == 0 {
+            return Result::Err(failure("unexpected byte stuffing"))
+        }
+        Result::Ok(marker)
+    }
+
+    fn read_bits(self: Reader, count: isize) -> Result[isize, Error] {
+        while self.available.get() < count {
+            let value = self.byte()?;
+            if value == 255 && self.byte()? != 0 {
+                return Result::Err(failure("premature entropy marker"))
+            }
+            self.bits.set((self.bits.get() << 8) | value);
+            self.available.set(self.available.get() + 8);
+        }
+        self.available.set(self.available.get() - count);
+        let value = (self.bits.get() >> self.available.get()) & ((1 << count) - 1);
+        self.bits.set(self.bits.get() & ((1 << self.available.get()) - 1));
+        Result::Ok(value)
+    }
+
+    fn signed_bits(self: Reader, count: isize) -> Result[isize, Error] {
+        let value = self.read_bits(count)?;
+        if count > 0 && value < (1 << (count - 1)) {
+            Result::Ok(value + 1 - (1 << count))
+        } else {
+            Result::Ok(value)
+        }
+    }
+
+    fn symbol(self: Reader, table: isize) -> Result[isize, Error] {
+        let huffman = self.huffman[table].ok_or(failure("missing Huffman table"))?;
+        let mut code = 0;
+        for index in 0..16 {
+            code = (code << 1) | self.read_bits(1)?;
+            let delta = code - huffman.starts[index];
+            if delta >= 0 && delta < huffman.counts[index] {
+                return Result::Ok(huffman.values[huffman.offsets[index] + delta])
+            }
+        }
+        Result::Err(failure("invalid Huffman code"))
+    }
+
+    fn reset_bits(self: Reader) -> () {
+        self.bits.set(0);
+        self.available.set(0);
+    }
+
+    fn read_huffman(self: Reader, end: isize) -> Result[(), Error] {
+        while self.position.get() < end {
+            if end - self.position.get() < 17 {
+                return Result::Err(failure("truncated Huffman table"))
+            }
+            let selector = self.byte()?;
+            if selector >> 4 > 1 || selector & 15 > 3 {
+                return Result::Err(failure("invalid Huffman selector"))
+            }
+            let counts = Vec::new();
+            let mut length = 0;
+            for _ in 0..16 {
+                let count = self.byte()?;
+                counts.push(count);
+                length += count;
+            }
+            if length > end - self.position.get() || length > 256 {
+                return Result::Err(failure("invalid Huffman table length"))
+            }
+            let values = Vec::new();
+            for _ in 0..length {
+                values.push(self.byte()?);
+            }
+            self.huffman[(selector >> 4) * 4 + (selector & 15)] = Option::Some(
+                huffman_table(counts, values)?,
+            );
+        }
+        Result::Ok(())
+    }
+
+    fn read_quantization(self: Reader, end: isize) -> Result[(), Error] {
+        while self.position.get() < end {
+            let selector = self.byte()?;
+            let wide = selector >> 4;
+            let index = selector & 15;
+            if wide > 1 || index > 3 || end - self.position.get() < 64 * (wide + 1) {
+                return Result::Err(failure("invalid quantization table"))
+            }
+            let values = Vec::new();
+            for _ in 0..64 {
+                let value = if wide == 0 {
+                    self.byte()?
+                } else {
+                    self.word()?
+                };
+                if value == 0 {
+                    return Result::Err(failure("zero quantization entry"))
+                }
+                values.push(value);
+            }
+            self.quantization[index] = values;
+        }
+        Result::Ok(())
+    }
+}
+
+fn read_frame(reader: Reader, end: isize, progressive: bool, limits: Limits) -> Result[Frame, Error] {
+    if end - reader.position.get() < 6 || reader.byte()? != 8 {
+        return Result::Err(failure("only eight-bit DCT frames are supported"))
+    }
+    let height = reader.word()?;
+    let width = reader.word()?;
+    let count = reader.byte()?;
+    if width == 0 || height == 0 || width > limits.max_dimension || height > limits.max_dimension
+        || width * height > limits.max_pixels
+        || width * height * 4 > limits.max_decoded_bytes {
+        return Result::Err(failure("dimensions or decoded byte limit exceeded"))
+    }
+    if (count != 1 && count != 3 && count != 4) || end - reader.position.get() != count * 3 {
+        return Result::Err(failure("invalid frame components"))
+    }
+    let descriptors: Vec[(isize, isize, isize, isize)] = Vec::new();
+    let mut horizontal = 1;
+    let mut vertical = 1;
+    for _ in 0..count {
+        let id = reader.byte()?;
+        let sampling = reader.byte()?;
+        let quantization = reader.byte()?;
+        if sampling >> 4 < 1 || sampling >> 4 > 4 || sampling & 15 < 1 || sampling & 15 > 4 {
+            return Result::Err(failure("invalid component sampling factors"))
+        }
+        let h = if count == 1 {
+            1
+        } else {
+            sampling >> 4
+        };
+        let v = if count == 1 {
+            1
+        } else {
+            sampling & 15
+        };
+        if h < 1 || h > 4 || v < 1 || v > 4 || quantization > 3 {
+            return Result::Err(failure("invalid component parameters"))
+        }
+        for descriptor in descriptors {
+            if descriptor.0 == id {
+                return Result::Err(failure("duplicate frame component"))
+            }
+        }
+        descriptors.push((id, h, v, quantization));
+        if h > horizontal {
+            horizontal = h;
+        }
+        if v > vertical {
+            vertical = v;
+        }
+    }
+    let columns = (width + horizontal * 8 - 1) / (horizontal * 8);
+    let rows = (height + vertical * 8 - 1) / (vertical * 8);
+    let components = Vec::new();
+    for descriptor in descriptors {
+        let (id, h, v, quantization) = descriptor;
+        if horizontal % h != 0 || vertical % v != 0 {
+            return Result::Err(failure("unsupported fractional sampling ratio"))
+        }
+        components.push(
+            Component {
+                id,
+                horizontal: h,
+                vertical: v,
+                quantization,
+                columns: columns * h,
+                rows: rows * v,
+                coefficients: integers(columns * rows * h * v * 64, 0),
+                approximation: integers(64, -1),
+                scan_quantization: Ref::new(Vec::new()),
+            },
+        );
+    }
+    Result::Ok(
+        Frame { width, height, horizontal, vertical, columns, rows, progressive, components },
+    )
+}
+
+fn refine_nonzero(
+    reader: Reader,
+    values: Vec[isize],
+    base: isize,
+    order: Vec[isize],
+    start: isize,
+    end: isize,
+    zeros: isize,
+    delta: isize,
+) -> Result[isize, Error] {
+    let mut position = start;
+    let mut remaining = zeros;
+    while position <= end {
+        let index = base + order[position];
+        if values[index] == 0 {
+            if remaining == 0 {
+                break
+            }
+            remaining -= 1;
+        } else if reader.read_bits(1)? != 0 {
+            if values[index] > 0 {
+                values[index] += delta;
+            } else {
+                values[index] -= delta;
+            }
+        }
+        position += 1;
+    }
+    Result::Ok(position)
+}
+
+fn decode_block(
+    reader: Reader,
+    component: Component,
+    offset: isize,
+    dc_table: isize,
+    ac_table: isize,
+    start: isize,
+    end: isize,
+    high: isize,
+    low: isize,
+    prediction: Ref[isize],
+    eob: Ref[isize],
+    order: Vec[isize],
+) -> Result[(), Error] {
+    let values = component.coefficients;
+    let mut position = start;
+    if high > 0 {
+        let delta = 1 << low;
+        if start == 0 {
+            if reader.read_bits(1)? != 0 {
+                values[offset] |= delta;
+            }
+            return Result::Ok(())
+        }
+        if eob.get() == 0 {
+            while position <= end {
+                let value = reader.symbol(ac_table)?;
+                let run = value >> 4;
+                let size = value & 15;
+                let mut coefficient = 0;
+                if size == 0 {
+                    if run != 15 {
+                        eob.set((1 << run) + reader.read_bits(run)?);
+                        break
+                    }
+                } else if size == 1 {
+                    coefficient = if reader.read_bits(1)? == 0 {
+                        -delta
+                    } else {
+                        delta
+                    };
+                } else {
+                    return Result::Err(failure("invalid refinement code"))
+                }
+                position = refine_nonzero(reader, values, offset, order, position, end, run, delta)?;
+                if position > end {
+                    return Result::Err(failure("too many refinement coefficients"))
+                }
+                if coefficient != 0 {
+                    values[offset + order[position]] = coefficient;
+                }
+                position += 1;
+            }
+        }
+        if eob.get() > 0 {
+            eob.set(eob.get() - 1);
+            let _ = refine_nonzero(reader, values, offset, order, position, end, -1, delta)?;
+        }
+        return Result::Ok(())
+    }
+    if start == 0 {
+        let size = reader.symbol(dc_table)?;
+        if size > 16 {
+            return Result::Err(failure("invalid DC category"))
+        }
+        prediction.set(prediction.get() + reader.signed_bits(size)?);
+        values[offset] = prediction.get() << low;
+        position = 1;
+    }
+    if position <= end && eob.get() > 0 {
+        eob.set(eob.get() - 1);
+        return Result::Ok(())
+    }
+    while position <= end {
+        let value = reader.symbol(ac_table)?;
+        let run = value >> 4;
+        let size = value & 15;
+        if size == 0 {
+            if run == 15 {
+                position += 16;
+                if position > end + 1 {
+                    return Result::Err(failure("too many zero coefficients"))
+                }
+                continue
+            }
+            eob.set((1 << run) + reader.read_bits(run)? - 1);
+            break
+        }
+        position += run;
+        if position > end {
+            return Result::Err(failure("too many AC coefficients"))
+        }
+        values[offset + order[position]] = reader.signed_bits(size)? << low;
+        position += 1;
+    }
+    Result::Ok(())
+}
+
+fn read_scan(reader: Reader, frame: Frame, end: isize) -> Result[(), Error] {
+    if end - reader.position.get() < 6 {
+        return Result::Err(failure("truncated scan header"))
+    }
+    let count = reader.byte()?;
+    if count == 0 || count > frame.components.len() || end - reader.position.get() != 2 * count + 3 {
+        return Result::Err(failure("invalid scan component count"))
+    }
+    let scan: Vec[ScanComponent] = Vec::new();
+    let mut sampling = 0;
+    for _ in 0..count {
+        let id = reader.byte()?;
+        let selector = reader.byte()?;
+        let mut index = -1;
+        for i in 0..frame.components.len() {
+            if frame.components[i].id == id {
+                index = i;
+            }
+        }
+        if index < 0 || selector >> 4 > 3 || selector & 15 > 3 {
+            return Result::Err(failure("invalid scan component selector"))
+        }
+        for entry in scan {
+            if entry.component == index {
+                return Result::Err(failure("duplicate scan component"))
+            }
+        }
+        let component = frame.components[index];
+        sampling += component.horizontal * component.vertical;
+        scan.push(ScanComponent { component: index, dc: selector >> 4, ac: 4 + (selector & 15) });
+    }
+    if count > 1 && sampling > 10 {
+        return Result::Err(failure("excessive scan sampling factors"))
+    }
+    let start = reader.byte()?;
+    let finish = reader.byte()?;
+    let approximation = reader.byte()?;
+    let high = approximation >> 4;
+    let low = approximation & 15;
+    if frame.progressive {
+        if start > finish || finish > 63 || (start == 0 && finish != 0) || (start > 0 && count != 1)
+            || low > 13
+            || high > 13
+            || (high != 0 && high != low + 1) {
+            return Result::Err(failure("invalid progressive scan parameters"))
+        }
+    } else if start != 0 || finish != 63 || approximation != 0 {
+        return Result::Err(failure("invalid sequential scan parameters"))
+    }
+    for entry in scan {
+        let component = frame.components[entry.component];
+        if reader.quantization[component.quantization].len() != 64 {
+            return Result::Err(failure("missing quantization table"))
+        }
+        component.scan_quantization.set(reader.quantization[component.quantization]);
+        for coefficient in start..finish + 1 {
+            let previous = component.approximation[coefficient];
+            if (high == 0 && previous != -1) || (high != 0 && previous != high) {
+                return Result::Err(failure("inconsistent successive approximation"))
+            }
+            component.approximation[coefficient] = low;
+        }
+    }
+    let first = frame.components[scan[0].component];
+    let columns = if count == 1 {
+        (frame.width * first.horizontal + frame.horizontal * 8 - 1) / (frame.horizontal * 8)
+    } else {
+        frame.columns
+    };
+    let rows = if count == 1 {
+        (frame.height * first.vertical + frame.vertical * 8 - 1) / (frame.vertical * 8)
+    } else {
+        frame.rows
+    };
+    let prediction: Vec[Ref[isize]] = Vec::new();
+    for _ in 0..frame.components.len() {
+        prediction.push(Ref::new(0));
+    }
+    let eob = Ref::new(0);
+    let order = zigzag();
+    reader.reset_bits();
+    let mut restart_index = 0;
+    for mcu in 0..columns * rows {
+        let mx = mcu % columns;
+        let my = mcu / columns;
+        for entry in scan {
+            let component = frame.components[entry.component];
+            let blocks = if count == 1 {
+                1
+            } else {
+                component.horizontal * component.vertical
+            };
+            for block in 0..blocks {
+                let bx = if count == 1 {
+                    mx
+                } else {
+                    mx * component.horizontal + block % component.horizontal
+                };
+                let by = if count == 1 {
+                    my
+                } else {
+                    my * component.vertical + block / component.horizontal
+                };
+                decode_block(
+                    reader,
+                    component,
+                    (by * component.columns + bx) * 64,
+                    entry.dc,
+                    entry.ac,
+                    start,
+                    finish,
+                    high,
+                    low,
+                    prediction[entry.component],
+                    eob,
+                    order,
+                )?;
+                if !frame.progressive && eob.get() != 0 {
+                    return Result::Err(failure("progressive end-of-band in sequential scan"))
+                }
+            }
+        }
+        let interval = reader.restart.get();
+        if interval > 0 && (mcu + 1) % interval == 0 && mcu + 1 < columns * rows {
+            reader.reset_bits();
+            if eob.get() != 0 || reader.marker()? != 208 + restart_index {
+                return Result::Err(failure("invalid restart marker"))
+            }
+            restart_index = (restart_index + 1) & 7;
+            for value in prediction {
+                value.set(0);
+            }
+        }
+    }
+    if eob.get() != 0 {
+        return Result::Err(failure("end-of-band run exceeds scan"))
+    }
+    reader.reset_bits();
+    Result::Ok(())
+}
+
+fn clamp(value: isize) -> u8 {
+    if value < 0 {
+        0
+    } else if value > 255 {
+        255
+    } else {
+        value.to_u8()
+    }
+}
+
+fn ycbcr(y: isize, cb: isize, cr: isize) -> (isize, isize, isize) {
+    let luminance = y * 65793;
+    let blue = cb - 128;
+    let red = cr - 128;
+    (
+        clamp((luminance + 91881 * red) >> 16).to_isize(),
+        clamp((luminance - 22554 * blue - 46802 * red) >> 16).to_isize(),
+        clamp((luminance + 116130 * blue) >> 16).to_isize(),
+    )
+}
+
+fn reconstruct(reader: Reader, frame: Frame) -> Result[Image, Error] {
+    let order = zigzag();
+    let planes: Vec[bytes::Bytes] = Vec::new();
+    let block: Vec[i32] = Vec::new();
+    for _ in 0..64 {
+        block.push(0);
+    }
+    for component in frame.components {
+        if component.approximation[0] < 0 {
+            return Result::Err(failure("missing component scan"))
+        }
+        let quantization = if frame.progressive {
+            reader.quantization[component.quantization]
+        } else {
+            component.scan_quantization.get()
+        };
+        let plane = bytes::Bytes::with_capacity(component.columns * component.rows * 64);
+        for _ in 0..component.columns * component.rows * 64 {
+            plane.push(0);
+        }
+        for by in 0..component.rows {
+            for bx in 0..component.columns {
+                let offset = (by * component.columns + bx) * 64;
+                for index in 0..64 {
+                    block[order[index]] = (component.coefficients[offset + order[index]]
+                        * quantization[index]).to_i32();
+                }
+                inverse_dct(block);
+                for y in 0..8 {
+                    for x in 0..8 {
+                        plane.set(
+                            (by * 8 + y) * component.columns * 8 + bx * 8 + x,
+                            clamp(block[y * 8 + x].to_isize() + 128),
+                        );
+                    }
+                }
+            }
+        }
+        planes.push(plane);
+    }
+    let count = frame.components.len();
+    let rgb = count == 3 && !reader.jfif.get()
+        && (reader.adobe.get() == 0
+            || (frame.components[0].id == 82 && frame.components[1].id == 71
+                && frame.components[2].id == 66));
+    if count == 4 && reader.adobe.get() < 0 {
+        return Result::Err(failure("CMYK frame requires Adobe color transform metadata"))
+    }
+    let pixels = Vec::with_capacity(frame.width * frame.height);
+    let channels = integers(4, 0);
+    for y in 0..frame.height {
+        for x in 0..frame.width {
+            for index in 0..count {
+                let component = frame.components[index];
+                let cx = x * component.horizontal / frame.horizontal;
+                let cy = y * component.vertical / frame.vertical;
+                channels[index] = planes[index].get(cy * component.columns * 8 + cx).to_isize();
+            }
+            let (mut red, mut green, mut blue) = if count == 1 {
+                (channels[0], channels[0], channels[0])
+            } else if rgb || (count == 4 && reader.adobe.get() == 0) {
+                (channels[0], channels[1], channels[2])
+            } else {
+                ycbcr(channels[0], channels[1], channels[2])
+            };
+            if count == 4 {
+                if reader.adobe.get() != 0 {
+                    red = 255 - red;
+                    green = 255 - green;
+                    blue = 255 - blue;
+                }
+                red = (red * channels[3] * 257 / 255) >> 8;
+                green = (green * channels[3] * 257 / 255) >> 8;
+                blue = (blue * channels[3] * 257 / 255) >> 8;
+            }
+            pixels.push(
+                Rgba8::new(red.to_u8(), green.to_u8(), blue.to_u8(), 255).map_err(
+                    |_| Error::InvalidPixel,
+                )?,
+            );
+        }
+    }
+    Image::from_pixels(Rect::new(0, 0, frame.width, frame.height)?, pixels)
+}
+
+fn decode_image(data: bytes::Bytes, limits: Limits) -> Result[Image, Error] {
+    limits.check_input(data)?;
+    let reader = Reader::new(data);
+    if reader.marker()? != 216 {
+        return Result::Err(failure("missing start of image"))
+    }
+    let mut frame: Option[Frame] = Option::None;
+    let mut scans = 0;
+    loop {
+        let marker = reader.marker()?;
+        if marker == 217 {
+            if scans == 0 {
+                return Result::Err(failure("missing scan"))
+            }
+            return reconstruct(reader, frame.ok_or(failure("missing frame"))?)
+        }
+        if marker == 216 || (marker >= 208 && marker <= 215) || marker == 1 {
+            return Result::Err(failure("unexpected standalone marker"))
+        }
+        let length = reader.word()?;
+        if length < 2 || length - 2 > data.len() - reader.position.get() {
+            return Result::Err(failure("invalid marker length"))
+        }
+        let start = reader.position.get();
+        let end = start + length - 2;
+        if marker == 192 || marker == 193 || marker == 194 {
+            if frame.is_some() {
+                return Result::Err(failure("multiple image frames"))
+            }
+            frame = Option::Some(read_frame(reader, end, marker == 194, limits)?);
+        } else if marker == 196 {
+            reader.read_huffman(end)?;
+        } else if marker == 219 {
+            reader.read_quantization(end)?;
+        } else if marker == 218 {
+            read_scan(reader, frame.ok_or(failure("scan before frame"))?, end)?;
+            scans += 1;
+            continue
+        } else if marker == 221 {
+            if length != 4 {
+                return Result::Err(failure("invalid restart interval"))
+            }
+            reader.restart.set(reader.word()?);
+        } else if marker == 224 && length >= 7 {
+            if data.get(start) == 74 && data.get(start + 1) == 70 && data.get(start + 2) == 73
+                && data.get(start + 3) == 70
+                && data.get(start + 4) == 0 {
+                reader.jfif.set(true);
+            }
+        } else if marker == 238 && length >= 14 {
+            if data.get(start) == 65 && data.get(start + 1) == 100 && data.get(start + 2) == 111
+                && data.get(start + 3) == 98
+                && data.get(start + 4) == 101 {
+                reader.adobe.set(data.get(start + 11).to_isize());
+            }
+        } else if (marker < 224 || marker > 239) && marker != 254 {
+            return Result::Err(failure("unsupported coding marker"))
+        }
+        reader.position.set(end);
+    }
+}

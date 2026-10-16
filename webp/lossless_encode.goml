@@ -1,0 +1,546 @@
+package webp;
+
+use ecosystem::image::{Image, Error};
+use ecosystem::image::codecs::{Limits};
+use std::bytes;
+
+struct LWriter {
+    data: bytes::Bytes,
+    bits: Ref[u32],
+    count: Ref[isize],
+    limit: isize,
+}
+
+impl LWriter {
+    fn write(self: LWriter, value: isize, count: isize) -> Result[(), Error] {
+        let mut remaining = count;
+        let mut input = value.to_u32();
+        let mut bits = self.bits.get();
+        let mut filled = self.count.get();
+        while remaining > 0 {
+            let take = if remaining < 8 - filled {
+                remaining
+            } else {
+                8 - filled
+            };
+            bits |= (input & ((1.to_u32() << take) - 1)) << filled;
+            filled += take;
+            input >>= take;
+            remaining -= take;
+            if filled == 8 {
+                if self.data.len() >= self.limit {
+                    return Result::Err(Error::Codec("image output byte limit exceeded"))
+                }
+                self.data.push(bits.to_u8());
+                bits = 0;
+                filled = 0;
+            }
+        }
+        self.bits.set(bits);
+        self.count.set(filled);
+        Result::Ok(())
+    }
+
+    fn finish(self: LWriter) -> Result[(), Error] {
+        let count = self.count.get();
+        if count != 0 {
+            self.write(0, 8 - count)?;
+        }
+        Result::Ok(())
+    }
+}
+
+struct LCode {
+    lengths: Vec[isize],
+    codes: Vec[isize],
+    symbols: isize,
+    single: isize,
+}
+
+fn l_make_code(histogram: Vec[isize], maximum: isize) -> LCode {
+    let mut minimum = 1;
+    let lengths = l_zeros(histogram.len());
+    let mut symbols = 0;
+    let mut single = 0;
+    for i in 0..histogram.len() {
+        if histogram[i] > 0 {
+            symbols += 1;
+            single = i;
+        }
+    }
+    if symbols < 2 {
+        lengths[single] = 1;
+        return LCode { lengths, codes: l_zeros(histogram.len()), symbols: 1, single }
+    }
+    loop {
+        let weights = l_zeros(histogram.len());
+        let parents = l_zeros(histogram.len());
+        for i in 0..histogram.len() {
+            parents[i] = -1;
+            let value = histogram[i];
+            if value > 0 {
+                weights[i] = if value < minimum {
+                    minimum
+                } else {
+                    value
+                };
+            }
+        }
+        for _ in 1..symbols {
+            let mut a = -1;
+            let mut b = -1;
+            for i in 0..weights.len() {
+                if weights[i] == 0 || parents[i] != -1 {
+                    continue;
+                }
+                if a < 0 || weights[i] < weights[a] {
+                    b = a;
+                    a = i;
+                } else if b < 0 || weights[i] < weights[b] {
+                    b = i;
+                }
+            }
+            let index = weights.len();
+            weights.push(weights[a] + weights[b]);
+            parents.push(-1);
+            parents[a] = index;
+            parents[b] = index;
+        }
+        let mut longest = 0;
+        for i in 0..histogram.len() {
+            if histogram[i] == 0 {
+                continue;
+            }
+            let mut depth = 0;
+            let mut index = i;
+            while parents[index] >= 0 {
+                depth += 1;
+                index = parents[index];
+            }
+            lengths[i] = depth;
+            if depth > longest {
+                longest = depth;
+            }
+        }
+        if longest <= maximum {
+            break;
+        }
+        minimum *= 2;
+    }
+    let counts = l_zeros(16);
+    for length in lengths {
+        if length > 0 {
+            counts[length] += 1;
+        }
+    }
+    let next = l_zeros(16);
+    let mut value = 0;
+    for depth in 1..16 {
+        value = (value + counts[depth - 1]) << 1;
+        next[depth] = value;
+    }
+    let codes = l_zeros(histogram.len());
+    for i in 0..lengths.len() {
+        let length = lengths[i];
+        if length != 0 {
+            let code = next[length];
+            next[length] += 1;
+            let mut reversed = 0;
+            for j in 0..length {
+                reversed = (reversed << 1) | ((code >> j) & 1);
+            }
+            codes[i] = reversed;
+        }
+    }
+    LCode { lengths, codes, symbols, single }
+}
+
+fn l_write_symbol(writer: LWriter, code: LCode, symbol: isize) -> Result[(), Error] {
+    if code.symbols > 1 {
+        writer.write(code.codes[symbol], code.lengths[symbol])?;
+    }
+    Result::Ok(())
+}
+
+fn l_write_code(writer: LWriter, code: LCode) -> Result[(), Error] {
+    let symbols = Vec::new();
+    for i in 0..code.lengths.len() {
+        if code.lengths[i] != 0 {
+            symbols.push(i);
+        }
+    }
+    if symbols.len() <= 2 && symbols[symbols.len() - 1] < 256 {
+        writer.write(1, 1)?;
+        writer.write(symbols.len() - 1, 1)?;
+        let first = symbols[0];
+        let bits = if first <= 1 {
+            1
+        } else {
+            8
+        };
+        writer.write(
+            if bits == 1 {
+                0
+            } else {
+                1
+            },
+            1,
+        )?;
+        writer.write(first, bits)?;
+        if symbols.len() == 2 {
+            writer.write(symbols[1], 8)?;
+        }
+        return Result::Ok(())
+    }
+    writer.write(0, 1)?;
+    let histogram = l_zeros(19);
+    for length in code.lengths {
+        histogram[length] += 1;
+    }
+    let lengths = l_make_code(histogram, 7);
+    let order = [17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    let mut count = 4;
+    for i in 0..19 {
+        if lengths.lengths[order[i]] != 0 {
+            count = i + 1;
+        }
+    }
+    if count < 4 {
+        count = 4;
+    }
+    writer.write(count - 4, 4)?;
+    for i in 0..count {
+        writer.write(lengths.lengths[order[i]], 3)?;
+    }
+    writer.write(0, 1)?;
+    for length in code.lengths {
+        l_write_symbol(writer, lengths, length)?;
+    }
+    Result::Ok(())
+}
+
+struct LToken {
+    green: isize,
+    red: isize,
+    blue: isize,
+    alpha: isize,
+}
+
+fn l_prefix(value: isize) -> (isize, isize) {
+    if value <= 4 {
+        return (value - 1, 0)
+    }
+    let mut bits = 0;
+    let mut remaining = value - 1;
+    while remaining > 3 {
+        remaining >>= 1;
+        bits += 1;
+    };
+    (2 * bits + remaining, value - 1 - (remaining << bits))
+}
+
+fn l_hash(pixels: Vec[u32], index: isize) -> isize {
+    let hash = (pixels[index] * 0x1e35a7bd) ^ (pixels[index + 1] * 0x9e3779b9)
+        ^ (pixels[index + 2] * 0x85ebca6b);
+    ((hash >> 16) & 65535).to_isize()
+}
+
+fn l_tokens(pixels: Vec[u32], width: isize, effort: isize) -> Vec[LToken] {
+    let tokens = Vec::new();
+    let heads = l_zeros(65536);
+    let previous = l_zeros(pixels.len());
+    let mut index = 0;
+    let search = if effort == 0 {
+        1
+    } else if effort == 6 {
+        64
+    } else {
+        16
+    };
+    while index < pixels.len() {
+        let mut best_length = 0;
+        let mut best_distance = 0;
+        if index + 2 < pixels.len() {
+            let hash = l_hash(pixels, index);
+            let mut candidate = heads[hash] - 1;
+            for _ in 0..search {
+                if candidate < 0 || index - candidate >= 1048456 {
+                    break;
+                }
+                let mut length = 0;
+                while index + length < pixels.len() && length < 4096
+                    && pixels[index + length] == pixels[candidate + length] {
+                    length += 1;
+                }
+                if length > best_length {
+                    best_length = length;
+                    best_distance = index - candidate;
+                }
+                if length == 4096 {
+                    break;
+                }
+                candidate = previous[candidate] - 1;
+            }
+        }
+        if best_length >= 3 {
+            let mut distance_code = best_distance + 120;
+            for code in 1..121 {
+                if l_distance(width, code) == best_distance {
+                    distance_code = code;
+                    break;
+                }
+            }
+            let (length_symbol, length_extra) = l_prefix(best_length);
+            let (distance_symbol, distance_extra) = l_prefix(distance_code);
+            tokens.push(
+                LToken {
+                    green: 256 + length_symbol,
+                    red: length_extra,
+                    blue: distance_symbol,
+                    alpha: distance_extra,
+                },
+            );
+            for i in index..index + best_length {
+                if i + 2 < pixels.len() {
+                    let hash = l_hash(pixels, i);
+                    previous[i] = heads[hash];
+                    heads[hash] = i + 1;
+                }
+            }
+            index += best_length;
+        } else {
+            let pixel = pixels[index];
+            tokens.push(
+                LToken {
+                    green: l_channel(pixel, 8),
+                    red: l_channel(pixel, 16),
+                    blue: l_channel(pixel, 0),
+                    alpha: l_channel(pixel, 24),
+                },
+            );
+            if index + 2 < pixels.len() {
+                let hash = l_hash(pixels, index);
+                previous[index] = heads[hash];
+                heads[hash] = index + 1;
+            }
+            index += 1;
+        }
+    }
+    tokens
+}
+
+fn l_write_pixels(writer: LWriter, pixels: Vec[u32], width: isize, top: bool, effort: isize) -> Result[
+    (),
+    Error,
+] {
+    writer.write(0, 1)?;
+    if top {
+        writer.write(0, 1)?;
+    }
+    let tokens = l_tokens(pixels, width, effort);
+    let histograms = Vec::from_array(
+        [l_zeros(280), l_zeros(256), l_zeros(256), l_zeros(256), l_zeros(40)],
+    );
+    for token in tokens {
+        histograms[0][token.green] += 1;
+        if token.green < 256 {
+            histograms[1][token.red] += 1;
+            histograms[2][token.blue] += 1;
+            histograms[3][token.alpha] += 1;
+        } else {
+            histograms[4][token.blue] += 1;
+        }
+    }
+    let codes: Vec[LCode] = Vec::new();
+    for histogram in histograms {
+        let code = l_make_code(histogram, 15);
+        l_write_code(writer, code)?;
+        codes.push(code);
+    }
+    for token in tokens {
+        l_write_symbol(writer, codes[0], token.green)?;
+        if token.green < 256 {
+            l_write_symbol(writer, codes[1], token.red)?;
+            l_write_symbol(writer, codes[2], token.blue)?;
+            l_write_symbol(writer, codes[3], token.alpha)?;
+        } else {
+            let length = token.green - 256;
+            writer.write(
+                token.red,
+                if length < 4 {
+                    0
+                } else {
+                    (length - 2) >> 1
+                },
+            )?;
+            l_write_symbol(writer, codes[4], token.blue)?;
+            writer.write(
+                token.alpha,
+                if token.blue < 4 {
+                    0
+                } else {
+                    (token.blue - 2) >> 1
+                },
+            )?;
+        }
+    }
+    Result::Ok(())
+}
+
+fn l_predict_encode(pixels: Vec[u32], width: isize, height: isize, effort: isize) -> Result[
+    (Vec[u32], Vec[u32], isize),
+    Error,
+] {
+    let bits = if effort == 6 {
+        4
+    } else {
+        5
+    };
+    let tile_width = l_tiles(width, bits);
+    let tile_height = l_tiles(height, bits);
+    let modes = l_pixels(tile_width * tile_height);
+    for ty in 0..tile_height {
+        for tx in 0..tile_width {
+            let mut best = 1;
+            let mut best_score = 2147483647;
+            if effort == 6 {
+                for mode in 0..14 {
+                    let mut score = 0;
+                    for y in(ty << bits)..((ty + 1) << bits) {
+                        if y == 0 || y >= height {
+                            continue;
+                        }
+                        for x in(tx << bits)..((tx + 1) << bits) {
+                            if x == 0 || x >= width {
+                                continue;
+                            }
+                            let i = y * width + x;
+                            let right = if x + 1 == width {
+                                pixels[y * width]
+                            } else {
+                                pixels[i - width + 1]
+                            };
+                            let predicted = l_predict(
+                                mode,
+                                pixels[i - 1],
+                                pixels[i - width],
+                                pixels[i - width - 1],
+                                right,
+                            )?;
+                            let residual = l_sub(pixels[i], predicted);
+                            for channel in 0..4 {
+                                score += l_abs(l_signed(l_channel(residual, channel * 8)));
+                            }
+                        }
+                    }
+                    if score < best_score {
+                        best_score = score;
+                        best = mode;
+                    }
+                }
+            }
+            modes[ty * tile_width + tx] = best.to_u32() << 8;
+        }
+    }
+    let residual = Vec::with_capacity(pixels.len());
+    for y in 0..height {
+        for x in 0..width {
+            let i = y * width + x;
+            let prediction = if y == 0 {
+                if x == 0 {
+                    0xff000000
+                } else {
+                    pixels[i - 1]
+                }
+            } else if x == 0 {
+                pixels[i - width]
+            } else {
+                let mode = l_channel(modes[(y >> bits) * tile_width + (x >> bits)], 8);
+                let right = if x + 1 == width {
+                    pixels[y * width]
+                } else {
+                    pixels[i - width + 1]
+                };
+                l_predict(mode, pixels[i - 1], pixels[i - width], pixels[i - width - 1], right)?
+            };
+            residual.push(l_sub(pixels[i], prediction));
+        }
+    }
+    Result::Ok((residual, modes, bits))
+}
+
+fn webp_write_u32(output: bytes::Bytes, value: isize) -> () {
+    for i in 0..4 {
+        output.push(((value >> (8 * i)) & 255).to_u8());
+    }
+}
+
+fn webp_encode(image: Image, limits: Limits, effort: isize) -> Result[bytes::Bytes, Error] {
+    if limits.max_output_bytes < 26 {
+        return Result::Err(Error::Codec("image output byte limit exceeded"))
+    }
+    let width = image.bounds().width();
+    let height = image.bounds().height();
+    let pixels = Vec::with_capacity(image.len());
+    let mut has_alpha = false;
+    for pixel in image.pixels() {
+        let alpha = pixel.alpha().to_isize();
+        if alpha != 255 {
+            has_alpha = true;
+        }
+        let mut value = alpha.to_u32() << 24;
+        if alpha != 0 {
+            value |= ((pixel.red().to_isize() * 255 + alpha / 2) / alpha).to_u32() << 16;
+            value |= ((pixel.green().to_isize() * 255 + alpha / 2) / alpha).to_u32() << 8;
+            value |= ((pixel.blue().to_isize() * 255 + alpha / 2) / alpha).to_u32();
+        }
+        let green = (value >> 8) & 255;
+        pixels.push(l_sub(value, green | (green << 16)));
+    }
+    let writer = LWriter {
+        data: bytes::Bytes::new(),
+        bits: Ref::new(0),
+        count: Ref::new(0),
+        limit: limits.max_output_bytes - 20,
+    };
+    writer.write(47, 8)?;
+    writer.write(width - 1, 14)?;
+    writer.write(height - 1, 14)?;
+    writer.write(
+        if has_alpha {
+            1
+        } else {
+            0
+        },
+        1,
+    )?;
+    writer.write(0, 3)?;
+    writer.write(1, 1)?;
+    writer.write(2, 2)?;
+    let mut encoded_pixels = pixels;
+    if effort != 0 {
+        let (residual, modes, bits) = l_predict_encode(pixels, width, height, effort)?;
+        writer.write(1, 1)?;
+        writer.write(0, 2)?;
+        writer.write(bits - 2, 3)?;
+        l_write_pixels(writer, modes, l_tiles(width, bits), false, effort)?;
+        encoded_pixels = residual;
+    }
+    writer.write(0, 1)?;
+    l_write_pixels(writer, encoded_pixels, width, true, effort)?;
+    writer.finish()?;
+    let payload = writer.data;
+    let padding = payload.len() % 2;
+    if payload.len() + padding > limits.max_output_bytes - 20 {
+        return Result::Err(Error::Codec("image output byte limit exceeded"))
+    }
+    let output = bytes::Bytes::from_string("RIFF");
+    webp_write_u32(output, 12 + payload.len() + padding);
+    output.extend_from_slice(bytes::Bytes::from_string("WEBPVP8L").as_slice());
+    webp_write_u32(output, payload.len());
+    output.extend_from_slice(payload.as_slice());
+    if padding != 0 {
+        output.push(0);
+    }
+    Result::Ok(output)
+}

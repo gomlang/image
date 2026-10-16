@@ -1,0 +1,523 @@
+package webp;
+
+use std::bytes;
+
+fn vp8_filter2(pix: bytes::Bytes, level: isize, index: isize, i_step: isize, j_step: isize) -> () {
+    let mut level = level;
+    let mut index = index;
+    let mut i_step = i_step;
+    let mut j_step = j_step;
+    {
+        let mut n = 16;
+        while (n > 0) {
+            let mut p1 = (pix.get((index - (2 * j_step))).to_isize());
+            let mut p0 = (pix.get((index - (1 * j_step))).to_isize());
+            let mut q0 = (pix.get((index + (0 * j_step))).to_isize());
+            let mut q1 = (pix.get((index + (1 * j_step))).to_isize());
+            if (((vp8_abs((p0 - q0)) << 1) + (vp8_abs((p1 - q1)) >> 1)) > level) {
+                let vp8_tmp_0_0 = (n - 1);
+                let vp8_tmp_0_1 = (index + i_step);
+                n = vp8_tmp_0_0;
+                index = vp8_tmp_0_1;
+                continue;
+            }
+            let mut a = ((3 * ((q0 - p0))) + vp8_clamp127((p1 - q1)));
+            let mut a1 = vp8_clamp15((((a + 4)) >> 3));
+            let mut a2 = vp8_clamp15((((a + 3)) >> 3));
+            pix.set((index - (1 * j_step)), (vp8_clamp255((p0 + a2))).to_u8());
+            pix.set((index + (0 * j_step)), (vp8_clamp255((q0 - a1))).to_u8());
+            let vp8_tmp_1_0 = (n - 1);
+            let vp8_tmp_1_1 = (index + i_step);
+            n = vp8_tmp_1_0;
+            index = vp8_tmp_1_1;
+        }
+    };
+}
+
+fn vp8_filter246(
+    pix: bytes::Bytes,
+    n: isize,
+    level: isize,
+    ilevel: isize,
+    hlevel: isize,
+    index: isize,
+    i_step: isize,
+    j_step: isize,
+    four_not_six: bool,
+) -> () {
+    let mut n = n;
+    let mut level = level;
+    let mut ilevel = ilevel;
+    let mut hlevel = hlevel;
+    let mut index = index;
+    let mut i_step = i_step;
+    let mut j_step = j_step;
+    {
+        while (n > 0) {
+            let mut p3 = (pix.get((index - (4 * j_step))).to_isize());
+            let mut p2 = (pix.get((index - (3 * j_step))).to_isize());
+            let mut p1 = (pix.get((index - (2 * j_step))).to_isize());
+            let mut p0 = (pix.get((index - (1 * j_step))).to_isize());
+            let mut q0 = (pix.get((index + (0 * j_step))).to_isize());
+            let mut q1 = (pix.get((index + (1 * j_step))).to_isize());
+            let mut q2 = (pix.get((index + (2 * j_step))).to_isize());
+            let mut q3 = (pix.get((index + (3 * j_step))).to_isize());
+            if (((vp8_abs((p0 - q0)) << 1) + (vp8_abs((p1 - q1)) >> 1)) > level) {
+                let vp8_tmp_2_0 = (n - 1);
+                let vp8_tmp_2_1 = (index + i_step);
+                n = vp8_tmp_2_0;
+                index = vp8_tmp_2_1;
+                continue;
+            }
+            if ((((((vp8_abs((p3 - p2)) > ilevel) || (vp8_abs((p2 - p1)) > ilevel))
+                || (vp8_abs((p1 - p0)) > ilevel))
+                || (vp8_abs((q1 - q0)) > ilevel))
+                || (vp8_abs((q2 - q1)) > ilevel))
+                || (vp8_abs((q3 - q2)) > ilevel)) {
+                let vp8_tmp_3_0 = (n - 1);
+                let vp8_tmp_3_1 = (index + i_step);
+                n = vp8_tmp_3_0;
+                index = vp8_tmp_3_1;
+                continue;
+            }
+            if ((vp8_abs((p1 - p0)) > hlevel) || (vp8_abs((q1 - q0)) > hlevel)) {
+                let mut a = ((3 * ((q0 - p0))) + vp8_clamp127((p1 - q1)));
+                let mut a1 = vp8_clamp15((((a + 4)) >> 3));
+                let mut a2 = vp8_clamp15((((a + 3)) >> 3));
+                pix.set((index - (1 * j_step)), (vp8_clamp255((p0 + a2))).to_u8());
+                pix.set((index + (0 * j_step)), (vp8_clamp255((q0 - a1))).to_u8());
+            } else if four_not_six {
+                let mut a = (3 * ((q0 - p0)));
+                let mut a1 = vp8_clamp15((((a + 4)) >> 3));
+                let mut a2 = vp8_clamp15((((a + 3)) >> 3));
+                let mut a3 = (((a1 + 1)) >> 1);
+                pix.set((index - (2 * j_step)), (vp8_clamp255((p1 + a3))).to_u8());
+                pix.set((index - (1 * j_step)), (vp8_clamp255((p0 + a2))).to_u8());
+                pix.set((index + (0 * j_step)), (vp8_clamp255((q0 - a1))).to_u8());
+                pix.set((index + (1 * j_step)), (vp8_clamp255((q1 - a3))).to_u8());
+            } else {
+                let mut a = vp8_clamp127(((3 * ((q0 - p0))) + vp8_clamp127((p1 - q1))));
+                let mut a1 = ((((27 * a) + 63)) >> 7);
+                let mut a2 = ((((18 * a) + 63)) >> 7);
+                let mut a3 = ((((9 * a) + 63)) >> 7);
+                pix.set((index - (3 * j_step)), (vp8_clamp255((p2 + a3))).to_u8());
+                pix.set((index - (2 * j_step)), (vp8_clamp255((p1 + a2))).to_u8());
+                pix.set((index - (1 * j_step)), (vp8_clamp255((p0 + a1))).to_u8());
+                pix.set((index + (0 * j_step)), (vp8_clamp255((q0 - a1))).to_u8());
+                pix.set((index + (1 * j_step)), (vp8_clamp255((q1 - a2))).to_u8());
+                pix.set((index + (2 * j_step)), (vp8_clamp255((q2 - a3))).to_u8());
+            }
+            let vp8_tmp_4_0 = (n - 1);
+            let vp8_tmp_4_1 = (index + i_step);
+            n = vp8_tmp_4_0;
+            index = vp8_tmp_4_1;
+        }
+    };
+}
+
+fn vp8_simple_filter(d: Ref[Vp8Decoder]) -> () {
+    {
+        let mut mby = 0;
+        while (mby < d.get().mbh) {
+            {
+                let mut mbx = 0;
+                while (mbx < d.get().mbw) {
+                    let mut f = d.get().per_mb_filter_params[((d.get().mbw * mby) + mbx)];
+                    if (f.get().level == 0) {
+                        mbx = (mbx + 1);
+                        continue;
+                    }
+                    let mut l = (f.get().level);
+                    let mut y_index = ((((mby * d.get().img.get().y_stride) + mbx)) * 16);
+                    if (mbx > 0) {
+                        vp8_filter2(
+                            d.get().img.get().y,
+                            (l + 4),
+                            y_index,
+                            d.get().img.get().y_stride,
+                            1,
+                        );
+                    }
+                    if f.get().inner {
+                        vp8_filter2(
+                            d.get().img.get().y,
+                            l,
+                            (y_index + 0x4),
+                            d.get().img.get().y_stride,
+                            1,
+                        );
+                        vp8_filter2(
+                            d.get().img.get().y,
+                            l,
+                            (y_index + 0x8),
+                            d.get().img.get().y_stride,
+                            1,
+                        );
+                        vp8_filter2(
+                            d.get().img.get().y,
+                            l,
+                            (y_index + 0xc),
+                            d.get().img.get().y_stride,
+                            1,
+                        );
+                    }
+                    if (mby > 0) {
+                        vp8_filter2(
+                            d.get().img.get().y,
+                            (l + 4),
+                            y_index,
+                            1,
+                            d.get().img.get().y_stride,
+                        );
+                    }
+                    if f.get().inner {
+                        vp8_filter2(
+                            d.get().img.get().y,
+                            l,
+                            (y_index + (d.get().img.get().y_stride * 0x4)),
+                            1,
+                            d.get().img.get().y_stride,
+                        );
+                        vp8_filter2(
+                            d.get().img.get().y,
+                            l,
+                            (y_index + (d.get().img.get().y_stride * 0x8)),
+                            1,
+                            d.get().img.get().y_stride,
+                        );
+                        vp8_filter2(
+                            d.get().img.get().y,
+                            l,
+                            (y_index + (d.get().img.get().y_stride * 0xc)),
+                            1,
+                            d.get().img.get().y_stride,
+                        );
+                    }
+                    mbx = (mbx + 1);
+                }
+            };
+            mby = (mby + 1);
+        }
+    };
+}
+
+fn vp8_normal_filter(d: Ref[Vp8Decoder]) -> () {
+    {
+        let mut mby = 0;
+        while (mby < d.get().mbh) {
+            {
+                let mut mbx = 0;
+                while (mbx < d.get().mbw) {
+                    let mut f = d.get().per_mb_filter_params[((d.get().mbw * mby) + mbx)];
+                    if (f.get().level == 0) {
+                        mbx = (mbx + 1);
+                        continue;
+                    }
+                    let vp8_tmp_5_0 = (f.get().level);
+                    let vp8_tmp_5_1 = (f.get().ilevel);
+                    let vp8_tmp_5_2 = (f.get().hlevel);
+                    let mut l = vp8_tmp_5_0;
+                    let mut il = vp8_tmp_5_1;
+                    let mut hl = vp8_tmp_5_2;
+                    let mut y_index = ((((mby * d.get().img.get().y_stride) + mbx)) * 16);
+                    let mut c_index = ((((mby * d.get().img.get().c_stride) + mbx)) * 8);
+                    if (mbx > 0) {
+                        vp8_filter246(
+                            d.get().img.get().y,
+                            16,
+                            (l + 4),
+                            il,
+                            hl,
+                            y_index,
+                            d.get().img.get().y_stride,
+                            1,
+                            false,
+                        );
+                        vp8_filter246(
+                            d.get().img.get().cb,
+                            8,
+                            (l + 4),
+                            il,
+                            hl,
+                            c_index,
+                            d.get().img.get().c_stride,
+                            1,
+                            false,
+                        );
+                        vp8_filter246(
+                            d.get().img.get().cr,
+                            8,
+                            (l + 4),
+                            il,
+                            hl,
+                            c_index,
+                            d.get().img.get().c_stride,
+                            1,
+                            false,
+                        );
+                    }
+                    if f.get().inner {
+                        vp8_filter246(
+                            d.get().img.get().y,
+                            16,
+                            l,
+                            il,
+                            hl,
+                            (y_index + 0x4),
+                            d.get().img.get().y_stride,
+                            1,
+                            true,
+                        );
+                        vp8_filter246(
+                            d.get().img.get().y,
+                            16,
+                            l,
+                            il,
+                            hl,
+                            (y_index + 0x8),
+                            d.get().img.get().y_stride,
+                            1,
+                            true,
+                        );
+                        vp8_filter246(
+                            d.get().img.get().y,
+                            16,
+                            l,
+                            il,
+                            hl,
+                            (y_index + 0xc),
+                            d.get().img.get().y_stride,
+                            1,
+                            true,
+                        );
+                        vp8_filter246(
+                            d.get().img.get().cb,
+                            8,
+                            l,
+                            il,
+                            hl,
+                            (c_index + 0x4),
+                            d.get().img.get().c_stride,
+                            1,
+                            true,
+                        );
+                        vp8_filter246(
+                            d.get().img.get().cr,
+                            8,
+                            l,
+                            il,
+                            hl,
+                            (c_index + 0x4),
+                            d.get().img.get().c_stride,
+                            1,
+                            true,
+                        );
+                    }
+                    if (mby > 0) {
+                        vp8_filter246(
+                            d.get().img.get().y,
+                            16,
+                            (l + 4),
+                            il,
+                            hl,
+                            y_index,
+                            1,
+                            d.get().img.get().y_stride,
+                            false,
+                        );
+                        vp8_filter246(
+                            d.get().img.get().cb,
+                            8,
+                            (l + 4),
+                            il,
+                            hl,
+                            c_index,
+                            1,
+                            d.get().img.get().c_stride,
+                            false,
+                        );
+                        vp8_filter246(
+                            d.get().img.get().cr,
+                            8,
+                            (l + 4),
+                            il,
+                            hl,
+                            c_index,
+                            1,
+                            d.get().img.get().c_stride,
+                            false,
+                        );
+                    }
+                    if f.get().inner {
+                        vp8_filter246(
+                            d.get().img.get().y,
+                            16,
+                            l,
+                            il,
+                            hl,
+                            (y_index + (d.get().img.get().y_stride * 0x4)),
+                            1,
+                            d.get().img.get().y_stride,
+                            true,
+                        );
+                        vp8_filter246(
+                            d.get().img.get().y,
+                            16,
+                            l,
+                            il,
+                            hl,
+                            (y_index + (d.get().img.get().y_stride * 0x8)),
+                            1,
+                            d.get().img.get().y_stride,
+                            true,
+                        );
+                        vp8_filter246(
+                            d.get().img.get().y,
+                            16,
+                            l,
+                            il,
+                            hl,
+                            (y_index + (d.get().img.get().y_stride * 0xc)),
+                            1,
+                            d.get().img.get().y_stride,
+                            true,
+                        );
+                        vp8_filter246(
+                            d.get().img.get().cb,
+                            8,
+                            l,
+                            il,
+                            hl,
+                            (c_index + (d.get().img.get().c_stride * 0x4)),
+                            1,
+                            d.get().img.get().c_stride,
+                            true,
+                        );
+                        vp8_filter246(
+                            d.get().img.get().cr,
+                            8,
+                            l,
+                            il,
+                            hl,
+                            (c_index + (d.get().img.get().c_stride * 0x4)),
+                            1,
+                            d.get().img.get().c_stride,
+                            true,
+                        );
+                    }
+                    mbx = (mbx + 1);
+                }
+            };
+            mby = (mby + 1);
+        }
+    };
+}
+
+fn vp8_compute_filter_params(d: Ref[Vp8Decoder]) -> () {
+    for i in 0..4 {
+        let mut base_level = d.get().filter_header.get().level;
+        if d.get().segment_header.get().use_segment {
+            base_level = d.get().segment_header.get().filter_strength[i];
+            if d.get().segment_header.get().relative_delta {
+                base_level = (base_level + d.get().filter_header.get().level);
+            }
+        }
+        for j in 0..2 {
+            let mut p = d.get().filter_params[i][j];
+            p.get().inner = (j != 0);
+            let mut level = base_level;
+            if d.get().filter_header.get().use_lf_delta {
+                level = (level + d.get().filter_header.get().ref_lf_delta[0]);
+                if (j != 0) {
+                    level = (level + d.get().filter_header.get().mode_lf_delta[0]);
+                }
+            }
+            if (level <= 0) {
+                p.get().level = 0;
+                continue;
+            }
+            if (level > 63) {
+                level = 63;
+            }
+            let mut ilevel = level;
+            if (d.get().filter_header.get().sharpness > 0) {
+                if (d.get().filter_header.get().sharpness > 4) {
+                    ilevel = (ilevel >> 2);
+                } else {
+                    ilevel = (ilevel >> 1);
+                }
+                {
+                    let mut x = ((9 - d.get().filter_header.get().sharpness));
+                    if (ilevel > x) {
+                        ilevel = x;
+                    }
+                };
+            }
+            if (ilevel < 1) {
+                ilevel = 1;
+            }
+            p.get().ilevel = (ilevel);
+            p.get().level = (((2 * level) + ilevel));
+            if d.get().frame_header.get().key_frame {
+                if (level < 15) {
+                    p.get().hlevel = 0;
+                } else if (level < 40) {
+                    p.get().hlevel = 1;
+                } else {
+                    p.get().hlevel = 2;
+                }
+            } else {
+                if (level < 15) {
+                    p.get().hlevel = 0;
+                } else if (level < 20) {
+                    p.get().hlevel = 1;
+                } else if (level < 40) {
+                    p.get().hlevel = 2;
+                } else {
+                    p.get().hlevel = 3;
+                }
+            }
+        }
+    }
+}
+
+const vp8_int_size: isize = 64;
+
+fn vp8_abs(x: isize) -> isize {
+    let mut x = x;
+    let mut m = (x >> ((vp8_int_size - 1)));
+    return (((x ^ m)) - m);
+}
+
+fn vp8_clamp15(x: isize) -> isize {
+    let mut x = x;
+    if (x < (-16)) {
+        return (-16);
+    }
+    if (x > 15) {
+        return 15;
+    }
+    return x;
+}
+
+fn vp8_clamp127(x: isize) -> isize {
+    let mut x = x;
+    if (x < (-128)) {
+        return (-128);
+    }
+    if (x > 127) {
+        return 127;
+    }
+    return x;
+}
+
+fn vp8_clamp255(x: isize) -> isize {
+    let mut x = x;
+    if (x < 0) {
+        return 0;
+    }
+    if (x > 255) {
+        return 255;
+    }
+    return (x);
+}

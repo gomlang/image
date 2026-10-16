@@ -45,38 +45,13 @@ an internal interchange format, not PNG, JPEG or a registered media type.
 `(cd ../workflows && just ecosystem-test image)` runs library and example format,
 build, tests, cached-build and executable checks.
 
-## Native adapter setup
+## JPEG and WebP codecs
 
-JPEG uses the Go standard `image/jpeg` implementation. WebP uses the pinned
-`golang.org/x/image` v0.46.0 decoder and `github.com/HugoSmits86/nativewebp` v1.3.0
-lossless encoder. Go 1.26 or newer is required; cgo and system image libraries
-are not required. The native adapter is declared at module level, so **all
-consuming modules, including consumers using only PNG or transforms, must have
-a minimal root `go.mod`**:
+JPEG and WebP encoding and decoding are implemented in GoML. Consumers need
+only the GoML manifest dependencies above; no Go module, native adapter,
+external codec dependency, or system codec library is required.
 
-```go
-module example.com/my-image-app
-
-go 1.26.0
-```
-
-GoML resolves the adapter from the selected image module and manages its Go
-requirement and source replacement. It does not modify the consumer's `go.mod`.
-External Go dependencies must be downloaded before an offline native build. For
-this repository, run `go mod download all`. CI prepares native dependencies
-automatically; the local ecosystem verifier expects the cache to be populated. A new consumer can prime the shared Go
-module cache using:
-
-```sh
-go mod download github.com/HugoSmits86/nativewebp@v1.3.0 golang.org/x/image@v0.46.0
-```
-
-The example shares the root manifest and native Go module.
-The explicit GoML declarations in `native/bindings.goml` call the Go bridge in
-`adapter/bindings.go`. Maintain these signatures together; the final Go build
-checks their compatibility.
-
-The new codecs share [`codecs::Limits`](codecs/README.md). They preserve the
+The codecs share [`codecs::Limits`](codecs/README.md). They preserve the
 existing `Image`, `Rect`, `Error`, `Codec`, draw and PNG APIs. JPEG explicitly
 flattens alpha against a configurable background; WebP preserves stored
 premultiplied bytes with lossless encoding. Metadata and color management are
@@ -89,7 +64,6 @@ Requires the [current GoML toolchain](https://github.com/gomlang/workflows/blob/
 ```sh
 goml run --example basic
 goml test
-go test ./adapter
 (cd ../workflows && just ecosystem-test image)
 ```
 

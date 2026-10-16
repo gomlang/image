@@ -1,0 +1,201 @@
+package webp;
+
+use ecosystem::image::{Image, Rect, Error};
+use ecosystem::image::codecs::{Limits};
+use ecosystem::color::{Rgba8};
+use std::bytes;
+
+fn webp_u32(data: bytes::Bytes, offset: isize) -> isize {
+    data.get(offset).to_isize() | (data.get(offset + 1).to_isize() << 8)
+        | (data.get(offset + 2).to_isize() << 16)
+        | (data.get(offset + 3).to_isize() << 24)
+}
+
+fn webp_u24(data: bytes::Bytes, offset: isize) -> isize {
+    data.get(offset).to_isize() | (data.get(offset + 1).to_isize() << 8)
+        | (data.get(offset + 2).to_isize() << 16)
+}
+
+fn webp_tag(data: bytes::Bytes, offset: isize, tag: string) -> bool {
+    let value = bytes::Bytes::from_string(tag);
+    data.get(offset) == value.get(0) && data.get(offset + 1) == value.get(1)
+        && data.get(offset + 2) == value.get(2)
+        && data.get(offset + 3) == value.get(3)
+}
+
+fn webp_dimensions(width: isize, height: isize, limits: Limits) -> Result[(), Error] {
+    if width < 1 || height < 1 || width > limits.max_dimension || height > limits.max_dimension
+        || width > limits.max_pixels / height
+        || width > limits.max_decoded_bytes / 4 / height {
+        return Result::Err(Error::Codec("image dimensions or decoded byte limit exceeded"))
+    }
+    Result::Ok(())
+}
+
+fn webp_alpha(data: bytes::Bytes, width: isize, height: isize) -> Result[Vec[isize], Error] {
+    if data.is_empty() {
+        return Result::Err(Error::Codec("missing WebP alpha header"))
+    }
+    let header = data.get(0).to_isize();
+    let method = header & 3;
+    let filter = (header >> 2) & 3;
+    let alpha = l_zeros(width * height);
+    if method == 0 {
+        if data.len() - 1 < alpha.len() {
+            return Result::Err(Error::Codec("truncated WebP alpha"))
+        }
+        for i in 0..alpha.len() {
+            alpha[i] = data.get(i + 1).to_isize();
+        }
+    } else if method == 1 {
+        let pixels = decode_vp8l(
+            bytes::Bytes::from_slice_copy(data.slice(1, data.len())),
+            width,
+            height,
+            false,
+        )?;
+        for i in 0..pixels.len() {
+            alpha[i] = l_channel(pixels[i], 8);
+        }
+    } else {
+        return Result::Err(Error::Codec("invalid WebP alpha compression"))
+    }
+    if filter != 0 {
+        for y in 0..height {
+            for x in 0..width {
+                let index = y * width + x;
+                let prediction = if y == 0 {
+                    if x == 0 {
+                        0
+                    } else {
+                        alpha[index - 1]
+                    }
+                } else if x == 0 || filter == 2 {
+                    alpha[index - width]
+                } else if filter == 1 {
+                    alpha[index - 1]
+                } else {
+                    l_clamp(alpha[index - 1] + alpha[index - width] - alpha[index - width - 1])
+                };
+                alpha[index] = (alpha[index] + prediction) & 255;
+            }
+        }
+    }
+    Result::Ok(alpha)
+}
+
+fn webp_decode(data: bytes::Bytes, limits: Limits) -> Result[Image, Error] {
+    if data.len() < 12 || !webp_tag(data, 0, "RIFF") || !webp_tag(data, 8, "WEBP")
+        || webp_u32(data, 4) + 8 != data.len() {
+        return Result::Err(Error::Codec("invalid or animated WebP container"))
+    }
+    let mut offset = 12;
+    let mut frame = bytes::Bytes::new();
+    let mut lossless = false;
+    let mut width = 0;
+    let mut height = 0;
+    let mut canvas_width = 0;
+    let mut canvas_height = 0;
+    let mut extended = false;
+    let mut wants_alpha = false;
+    let mut alpha = bytes::Bytes::new();
+    while offset < data.len() {
+        if data.len() - offset < 8 {
+            return Result::Err(Error::Codec("truncated WebP chunk"))
+        }
+        let length = webp_u32(data, offset + 4);
+        if length > data.len() - offset - 8 {
+            return Result::Err(Error::Codec("invalid WebP chunk size"))
+        }
+        let start = offset + 8;
+        let end = start + length;
+        let padded = end + length % 2;
+        if padded > data.len() || (length % 2 != 0 && data.get(end) != 0) {
+            return Result::Err(Error::Codec("invalid WebP chunk padding"))
+        }
+        if webp_tag(data, offset, "ANIM") || webp_tag(data, offset, "ANMF") {
+            return Result::Err(Error::Codec("animated WebP is not supported"))
+        }
+        if webp_tag(data, offset, "VP8X") {
+            if length != 10 || data.get(start) & 2 != 0 || extended || !frame.is_empty() {
+                return Result::Err(Error::Codec("invalid WebP extended header"))
+            }
+            extended = true;
+            wants_alpha = data.get(start) & 16 != 0;
+            canvas_width = webp_u24(data, start + 4) + 1;
+            canvas_height = webp_u24(data, start + 7) + 1;
+            webp_dimensions(canvas_width, canvas_height, limits)?;
+        } else if webp_tag(data, offset, "ALPH") {
+            if !wants_alpha || !alpha.is_empty() || !frame.is_empty() || length < 1 {
+                return Result::Err(Error::Codec("invalid WebP alpha placement"))
+            }
+            alpha = bytes::Bytes::from_slice_copy(data.slice(start, end));
+            wants_alpha = false;
+        } else if webp_tag(data, offset, "VP8L") || webp_tag(data, offset, "VP8 ") {
+            if !frame.is_empty() {
+                return Result::Err(Error::Codec("multiple WebP image chunks"))
+            }
+            lossless = webp_tag(data, offset, "VP8L");
+            if lossless {
+                if length < 5 || data.get(start) != 47 || data.get(start + 4) & 224 != 0
+                    || !alpha.is_empty() {
+                    return Result::Err(Error::Codec("invalid VP8L header"))
+                }
+                let packed = webp_u32(data, start + 1);
+                width = (packed & 16383) + 1;
+                height = ((packed >> 14) & 16383) + 1;
+            } else {
+                if length < 10 || data.get(start) & 1 != 0 || data.get(start + 3) != 157
+                    || data.get(start + 4) != 1
+                    || data.get(start + 5) != 42
+                    || wants_alpha {
+                    return Result::Err(Error::Codec("invalid VP8 frame header"))
+                }
+                width = (data.get(start + 6).to_isize() | (data.get(start + 7).to_isize() << 8))
+                    & 16383;
+                height = (data.get(start + 8).to_isize() | (data.get(start + 9).to_isize() << 8))
+                    & 16383;
+            }
+            webp_dimensions(width, height, limits)?;
+            if extended && (width != canvas_width || height != canvas_height) {
+                return Result::Err(Error::Codec("WebP canvas and frame dimensions differ"))
+            }
+            frame = bytes::Bytes::from_slice_copy(data.slice(start, end));
+        }
+        offset = padded;
+    }
+    if frame.is_empty() {
+        return Result::Err(Error::Codec("missing WebP image chunk"))
+    }
+    let pixels = if lossless {
+        decode_vp8l(frame, width, height, true)?
+    } else {
+        decode_vp8(frame, width, height)?
+    };
+    if pixels.len() != width * height {
+        return Result::Err(Error::Codec("decoded dimensions differ from image header"))
+    }
+    let opacity = if alpha.is_empty() {
+        Vec::new()
+    } else {
+        webp_alpha(alpha, width, height)?
+    };
+    let output = Vec::with_capacity(pixels.len());
+    for i in 0..pixels.len() {
+        let pixel = pixels[i];
+        let a = if opacity.is_empty() {
+            l_channel(pixel, 24)
+        } else {
+            opacity[i]
+        };
+        output.push(
+            Rgba8::new(
+                ((l_channel(pixel, 16) * a + 127) / 255).to_u8(),
+                ((l_channel(pixel, 8) * a + 127) / 255).to_u8(),
+                ((l_channel(pixel, 0) * a + 127) / 255).to_u8(),
+                a.to_u8(),
+            ).map_err(|_| Error::InvalidPixel)?,
+        );
+    }
+    Image::from_pixels(Rect::new(0, 0, width, height)?, output)
+}

@@ -1,0 +1,744 @@
+package webp;
+
+use std::bytes;
+
+const vp8_n_pred: isize = 10;
+
+const vp8_pred_dc: isize = 0;
+
+const vp8_pred_tm: isize = 1;
+
+const vp8_pred_ve: isize = 2;
+
+const vp8_pred_he: isize = 3;
+
+const vp8_pred_rd: isize = 4;
+
+const vp8_pred_vr: isize = 5;
+
+const vp8_pred_ld: isize = 6;
+
+const vp8_pred_vl: isize = 7;
+
+const vp8_pred_hd: isize = 8;
+
+const vp8_pred_hu: isize = 9;
+
+const vp8_pred_dc_top: isize = 10;
+
+const vp8_pred_dc_left: isize = 11;
+
+const vp8_pred_dc_top_left: isize = 12;
+
+fn vp8_check_top_left_pred(mbx: isize, mby: isize, p: isize) -> isize {
+    let mut mbx = mbx;
+    let mut mby = mby;
+    let mut p = p;
+    if (p != vp8_pred_dc) {
+        return p;
+    }
+    if (mbx == 0) {
+        if (mby == 0) {
+            return vp8_pred_dc_top_left;
+        }
+        return vp8_pred_dc_left;
+    }
+    if (mby == 0) {
+        return vp8_pred_dc_top;
+    }
+    return vp8_pred_dc;
+}
+
+fn vp8_pred_func4_dc(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut sum = (4);
+    {
+        let mut i = 0;
+        while (i < 4) {
+            sum = (sum + (z.get().ybr[(y - 1)][(x + i)]));
+            i = (i + 1);
+        }
+    };
+    {
+        let mut j = 0;
+        while (j < 4) {
+            sum = (sum + (z.get().ybr[(y + j)][(x - 1)]));
+            j = (j + 1);
+        }
+    };
+    let mut avg = ((sum / 8));
+    {
+        let mut j = 0;
+        while (j < 4) {
+            {
+                let mut i = 0;
+                while (i < 4) {
+                    z.get().ybr[(y + j)][(x + i)] = avg;
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func4_tm(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut delta0 = (-(z.get().ybr[(y - 1)][(x - 1)]));
+    {
+        let mut j = 0;
+        while (j < 4) {
+            let mut delta1 = (delta0 + (z.get().ybr[(y + j)][(x - 1)]));
+            {
+                let mut i = 0;
+                while (i < 4) {
+                    let mut delta2 = (delta1 + (z.get().ybr[(y - 1)][(x + i)]));
+                    z.get().ybr[(y + j)][(x + i)] = (vp8_clip(delta2, 0, 255));
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func4_ve(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut a = (z.get().ybr[(y - 1)][(x - 1)]);
+    let mut b = (z.get().ybr[(y - 1)][(x + 0)]);
+    let mut c = (z.get().ybr[(y - 1)][(x + 1)]);
+    let mut d = (z.get().ybr[(y - 1)][(x + 2)]);
+    let mut e = (z.get().ybr[(y - 1)][(x + 3)]);
+    let mut f = (z.get().ybr[(y - 1)][(x + 4)]);
+    let mut abc = ((((((a + (2 * b)) + c) + 2)) / 4));
+    let mut bcd = ((((((b + (2 * c)) + d) + 2)) / 4));
+    let mut cde = ((((((c + (2 * d)) + e) + 2)) / 4));
+    let mut def = ((((((d + (2 * e)) + f) + 2)) / 4));
+    {
+        let mut j = 0;
+        while (j < 4) {
+            z.get().ybr[(y + j)][(x + 0)] = abc;
+            z.get().ybr[(y + j)][(x + 1)] = bcd;
+            z.get().ybr[(y + j)][(x + 2)] = cde;
+            z.get().ybr[(y + j)][(x + 3)] = def;
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func4_he(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut s = (z.get().ybr[(y + 3)][(x - 1)]);
+    let mut r = (z.get().ybr[(y + 2)][(x - 1)]);
+    let mut q = (z.get().ybr[(y + 1)][(x - 1)]);
+    let mut p = (z.get().ybr[(y + 0)][(x - 1)]);
+    let mut a = (z.get().ybr[(y - 1)][(x - 1)]);
+    let mut ssr = ((((((s + (2 * s)) + r) + 2)) / 4));
+    let mut srq = ((((((s + (2 * r)) + q) + 2)) / 4));
+    let mut rqp = ((((((r + (2 * q)) + p) + 2)) / 4));
+    let mut apq = ((((((a + (2 * p)) + q) + 2)) / 4));
+    {
+        let mut i = 0;
+        while (i < 4) {
+            z.get().ybr[(y + 0)][(x + i)] = apq;
+            z.get().ybr[(y + 1)][(x + i)] = rqp;
+            z.get().ybr[(y + 2)][(x + i)] = srq;
+            z.get().ybr[(y + 3)][(x + i)] = ssr;
+            i = (i + 1);
+        }
+    };
+}
+
+fn vp8_pred_func4_rd(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut s = (z.get().ybr[(y + 3)][(x - 1)]);
+    let mut r = (z.get().ybr[(y + 2)][(x - 1)]);
+    let mut q = (z.get().ybr[(y + 1)][(x - 1)]);
+    let mut p = (z.get().ybr[(y + 0)][(x - 1)]);
+    let mut a = (z.get().ybr[(y - 1)][(x - 1)]);
+    let mut b = (z.get().ybr[(y - 1)][(x + 0)]);
+    let mut c = (z.get().ybr[(y - 1)][(x + 1)]);
+    let mut d = (z.get().ybr[(y - 1)][(x + 2)]);
+    let mut e = (z.get().ybr[(y - 1)][(x + 3)]);
+    let mut srq = ((((((s + (2 * r)) + q) + 2)) / 4));
+    let mut rqp = ((((((r + (2 * q)) + p) + 2)) / 4));
+    let mut qpa = ((((((q + (2 * p)) + a) + 2)) / 4));
+    let mut pab = ((((((p + (2 * a)) + b) + 2)) / 4));
+    let mut abc = ((((((a + (2 * b)) + c) + 2)) / 4));
+    let mut bcd = ((((((b + (2 * c)) + d) + 2)) / 4));
+    let mut cde = ((((((c + (2 * d)) + e) + 2)) / 4));
+    z.get().ybr[(y + 0)][(x + 0)] = pab;
+    z.get().ybr[(y + 0)][(x + 1)] = abc;
+    z.get().ybr[(y + 0)][(x + 2)] = bcd;
+    z.get().ybr[(y + 0)][(x + 3)] = cde;
+    z.get().ybr[(y + 1)][(x + 0)] = qpa;
+    z.get().ybr[(y + 1)][(x + 1)] = pab;
+    z.get().ybr[(y + 1)][(x + 2)] = abc;
+    z.get().ybr[(y + 1)][(x + 3)] = bcd;
+    z.get().ybr[(y + 2)][(x + 0)] = rqp;
+    z.get().ybr[(y + 2)][(x + 1)] = qpa;
+    z.get().ybr[(y + 2)][(x + 2)] = pab;
+    z.get().ybr[(y + 2)][(x + 3)] = abc;
+    z.get().ybr[(y + 3)][(x + 0)] = srq;
+    z.get().ybr[(y + 3)][(x + 1)] = rqp;
+    z.get().ybr[(y + 3)][(x + 2)] = qpa;
+    z.get().ybr[(y + 3)][(x + 3)] = pab;
+}
+
+fn vp8_pred_func4_vr(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut r = (z.get().ybr[(y + 2)][(x - 1)]);
+    let mut q = (z.get().ybr[(y + 1)][(x - 1)]);
+    let mut p = (z.get().ybr[(y + 0)][(x - 1)]);
+    let mut a = (z.get().ybr[(y - 1)][(x - 1)]);
+    let mut b = (z.get().ybr[(y - 1)][(x + 0)]);
+    let mut c = (z.get().ybr[(y - 1)][(x + 1)]);
+    let mut d = (z.get().ybr[(y - 1)][(x + 2)]);
+    let mut e = (z.get().ybr[(y - 1)][(x + 3)]);
+    let mut ab = (((((a + b) + 1)) / 2));
+    let mut bc = (((((b + c) + 1)) / 2));
+    let mut cd = (((((c + d) + 1)) / 2));
+    let mut de = (((((d + e) + 1)) / 2));
+    let mut rqp = ((((((r + (2 * q)) + p) + 2)) / 4));
+    let mut qpa = ((((((q + (2 * p)) + a) + 2)) / 4));
+    let mut pab = ((((((p + (2 * a)) + b) + 2)) / 4));
+    let mut abc = ((((((a + (2 * b)) + c) + 2)) / 4));
+    let mut bcd = ((((((b + (2 * c)) + d) + 2)) / 4));
+    let mut cde = ((((((c + (2 * d)) + e) + 2)) / 4));
+    z.get().ybr[(y + 0)][(x + 0)] = ab;
+    z.get().ybr[(y + 0)][(x + 1)] = bc;
+    z.get().ybr[(y + 0)][(x + 2)] = cd;
+    z.get().ybr[(y + 0)][(x + 3)] = de;
+    z.get().ybr[(y + 1)][(x + 0)] = pab;
+    z.get().ybr[(y + 1)][(x + 1)] = abc;
+    z.get().ybr[(y + 1)][(x + 2)] = bcd;
+    z.get().ybr[(y + 1)][(x + 3)] = cde;
+    z.get().ybr[(y + 2)][(x + 0)] = qpa;
+    z.get().ybr[(y + 2)][(x + 1)] = ab;
+    z.get().ybr[(y + 2)][(x + 2)] = bc;
+    z.get().ybr[(y + 2)][(x + 3)] = cd;
+    z.get().ybr[(y + 3)][(x + 0)] = rqp;
+    z.get().ybr[(y + 3)][(x + 1)] = pab;
+    z.get().ybr[(y + 3)][(x + 2)] = abc;
+    z.get().ybr[(y + 3)][(x + 3)] = bcd;
+}
+
+fn vp8_pred_func4_ld(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut a = (z.get().ybr[(y - 1)][(x + 0)]);
+    let mut b = (z.get().ybr[(y - 1)][(x + 1)]);
+    let mut c = (z.get().ybr[(y - 1)][(x + 2)]);
+    let mut d = (z.get().ybr[(y - 1)][(x + 3)]);
+    let mut e = (z.get().ybr[(y - 1)][(x + 4)]);
+    let mut f = (z.get().ybr[(y - 1)][(x + 5)]);
+    let mut g = (z.get().ybr[(y - 1)][(x + 6)]);
+    let mut h = (z.get().ybr[(y - 1)][(x + 7)]);
+    let mut abc = ((((((a + (2 * b)) + c) + 2)) / 4));
+    let mut bcd = ((((((b + (2 * c)) + d) + 2)) / 4));
+    let mut cde = ((((((c + (2 * d)) + e) + 2)) / 4));
+    let mut def = ((((((d + (2 * e)) + f) + 2)) / 4));
+    let mut efg = ((((((e + (2 * f)) + g) + 2)) / 4));
+    let mut fgh = ((((((f + (2 * g)) + h) + 2)) / 4));
+    let mut ghh = ((((((g + (2 * h)) + h) + 2)) / 4));
+    z.get().ybr[(y + 0)][(x + 0)] = abc;
+    z.get().ybr[(y + 0)][(x + 1)] = bcd;
+    z.get().ybr[(y + 0)][(x + 2)] = cde;
+    z.get().ybr[(y + 0)][(x + 3)] = def;
+    z.get().ybr[(y + 1)][(x + 0)] = bcd;
+    z.get().ybr[(y + 1)][(x + 1)] = cde;
+    z.get().ybr[(y + 1)][(x + 2)] = def;
+    z.get().ybr[(y + 1)][(x + 3)] = efg;
+    z.get().ybr[(y + 2)][(x + 0)] = cde;
+    z.get().ybr[(y + 2)][(x + 1)] = def;
+    z.get().ybr[(y + 2)][(x + 2)] = efg;
+    z.get().ybr[(y + 2)][(x + 3)] = fgh;
+    z.get().ybr[(y + 3)][(x + 0)] = def;
+    z.get().ybr[(y + 3)][(x + 1)] = efg;
+    z.get().ybr[(y + 3)][(x + 2)] = fgh;
+    z.get().ybr[(y + 3)][(x + 3)] = ghh;
+}
+
+fn vp8_pred_func4_vl(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut a = (z.get().ybr[(y - 1)][(x + 0)]);
+    let mut b = (z.get().ybr[(y - 1)][(x + 1)]);
+    let mut c = (z.get().ybr[(y - 1)][(x + 2)]);
+    let mut d = (z.get().ybr[(y - 1)][(x + 3)]);
+    let mut e = (z.get().ybr[(y - 1)][(x + 4)]);
+    let mut f = (z.get().ybr[(y - 1)][(x + 5)]);
+    let mut g = (z.get().ybr[(y - 1)][(x + 6)]);
+    let mut h = (z.get().ybr[(y - 1)][(x + 7)]);
+    let mut ab = (((((a + b) + 1)) / 2));
+    let mut bc = (((((b + c) + 1)) / 2));
+    let mut cd = (((((c + d) + 1)) / 2));
+    let mut de = (((((d + e) + 1)) / 2));
+    let mut abc = ((((((a + (2 * b)) + c) + 2)) / 4));
+    let mut bcd = ((((((b + (2 * c)) + d) + 2)) / 4));
+    let mut cde = ((((((c + (2 * d)) + e) + 2)) / 4));
+    let mut def = ((((((d + (2 * e)) + f) + 2)) / 4));
+    let mut efg = ((((((e + (2 * f)) + g) + 2)) / 4));
+    let mut fgh = ((((((f + (2 * g)) + h) + 2)) / 4));
+    z.get().ybr[(y + 0)][(x + 0)] = ab;
+    z.get().ybr[(y + 0)][(x + 1)] = bc;
+    z.get().ybr[(y + 0)][(x + 2)] = cd;
+    z.get().ybr[(y + 0)][(x + 3)] = de;
+    z.get().ybr[(y + 1)][(x + 0)] = abc;
+    z.get().ybr[(y + 1)][(x + 1)] = bcd;
+    z.get().ybr[(y + 1)][(x + 2)] = cde;
+    z.get().ybr[(y + 1)][(x + 3)] = def;
+    z.get().ybr[(y + 2)][(x + 0)] = bc;
+    z.get().ybr[(y + 2)][(x + 1)] = cd;
+    z.get().ybr[(y + 2)][(x + 2)] = de;
+    z.get().ybr[(y + 2)][(x + 3)] = efg;
+    z.get().ybr[(y + 3)][(x + 0)] = bcd;
+    z.get().ybr[(y + 3)][(x + 1)] = cde;
+    z.get().ybr[(y + 3)][(x + 2)] = def;
+    z.get().ybr[(y + 3)][(x + 3)] = fgh;
+}
+
+fn vp8_pred_func4_hd(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut s = (z.get().ybr[(y + 3)][(x - 1)]);
+    let mut r = (z.get().ybr[(y + 2)][(x - 1)]);
+    let mut q = (z.get().ybr[(y + 1)][(x - 1)]);
+    let mut p = (z.get().ybr[(y + 0)][(x - 1)]);
+    let mut a = (z.get().ybr[(y - 1)][(x - 1)]);
+    let mut b = (z.get().ybr[(y - 1)][(x + 0)]);
+    let mut c = (z.get().ybr[(y - 1)][(x + 1)]);
+    let mut d = (z.get().ybr[(y - 1)][(x + 2)]);
+    let mut sr = (((((s + r) + 1)) / 2));
+    let mut rq = (((((r + q) + 1)) / 2));
+    let mut qp = (((((q + p) + 1)) / 2));
+    let mut pa = (((((p + a) + 1)) / 2));
+    let mut srq = ((((((s + (2 * r)) + q) + 2)) / 4));
+    let mut rqp = ((((((r + (2 * q)) + p) + 2)) / 4));
+    let mut qpa = ((((((q + (2 * p)) + a) + 2)) / 4));
+    let mut pab = ((((((p + (2 * a)) + b) + 2)) / 4));
+    let mut abc = ((((((a + (2 * b)) + c) + 2)) / 4));
+    let mut bcd = ((((((b + (2 * c)) + d) + 2)) / 4));
+    z.get().ybr[(y + 0)][(x + 0)] = pa;
+    z.get().ybr[(y + 0)][(x + 1)] = pab;
+    z.get().ybr[(y + 0)][(x + 2)] = abc;
+    z.get().ybr[(y + 0)][(x + 3)] = bcd;
+    z.get().ybr[(y + 1)][(x + 0)] = qp;
+    z.get().ybr[(y + 1)][(x + 1)] = qpa;
+    z.get().ybr[(y + 1)][(x + 2)] = pa;
+    z.get().ybr[(y + 1)][(x + 3)] = pab;
+    z.get().ybr[(y + 2)][(x + 0)] = rq;
+    z.get().ybr[(y + 2)][(x + 1)] = rqp;
+    z.get().ybr[(y + 2)][(x + 2)] = qp;
+    z.get().ybr[(y + 2)][(x + 3)] = qpa;
+    z.get().ybr[(y + 3)][(x + 0)] = sr;
+    z.get().ybr[(y + 3)][(x + 1)] = srq;
+    z.get().ybr[(y + 3)][(x + 2)] = rq;
+    z.get().ybr[(y + 3)][(x + 3)] = rqp;
+}
+
+fn vp8_pred_func4_hu(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut s = (z.get().ybr[(y + 3)][(x - 1)]);
+    let mut r = (z.get().ybr[(y + 2)][(x - 1)]);
+    let mut q = (z.get().ybr[(y + 1)][(x - 1)]);
+    let mut p = (z.get().ybr[(y + 0)][(x - 1)]);
+    let mut pq = (((((p + q) + 1)) / 2));
+    let mut qr = (((((q + r) + 1)) / 2));
+    let mut rs = (((((r + s) + 1)) / 2));
+    let mut pqr = ((((((p + (2 * q)) + r) + 2)) / 4));
+    let mut qrs = ((((((q + (2 * r)) + s) + 2)) / 4));
+    let mut rss = ((((((r + (2 * s)) + s) + 2)) / 4));
+    let mut sss = (s);
+    z.get().ybr[(y + 0)][(x + 0)] = pq;
+    z.get().ybr[(y + 0)][(x + 1)] = pqr;
+    z.get().ybr[(y + 0)][(x + 2)] = qr;
+    z.get().ybr[(y + 0)][(x + 3)] = qrs;
+    z.get().ybr[(y + 1)][(x + 0)] = qr;
+    z.get().ybr[(y + 1)][(x + 1)] = qrs;
+    z.get().ybr[(y + 1)][(x + 2)] = rs;
+    z.get().ybr[(y + 1)][(x + 3)] = rss;
+    z.get().ybr[(y + 2)][(x + 0)] = rs;
+    z.get().ybr[(y + 2)][(x + 1)] = rss;
+    z.get().ybr[(y + 2)][(x + 2)] = sss;
+    z.get().ybr[(y + 2)][(x + 3)] = sss;
+    z.get().ybr[(y + 3)][(x + 0)] = sss;
+    z.get().ybr[(y + 3)][(x + 1)] = sss;
+    z.get().ybr[(y + 3)][(x + 2)] = sss;
+    z.get().ybr[(y + 3)][(x + 3)] = sss;
+}
+
+fn vp8_pred_func8_dc(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut sum = (8);
+    {
+        let mut i = 0;
+        while (i < 8) {
+            sum = (sum + (z.get().ybr[(y - 1)][(x + i)]));
+            i = (i + 1);
+        }
+    };
+    {
+        let mut j = 0;
+        while (j < 8) {
+            sum = (sum + (z.get().ybr[(y + j)][(x - 1)]));
+            j = (j + 1);
+        }
+    };
+    let mut avg = ((sum / 16));
+    {
+        let mut j = 0;
+        while (j < 8) {
+            {
+                let mut i = 0;
+                while (i < 8) {
+                    z.get().ybr[(y + j)][(x + i)] = avg;
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func8_tm(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut delta0 = (-(z.get().ybr[(y - 1)][(x - 1)]));
+    {
+        let mut j = 0;
+        while (j < 8) {
+            let mut delta1 = (delta0 + (z.get().ybr[(y + j)][(x - 1)]));
+            {
+                let mut i = 0;
+                while (i < 8) {
+                    let mut delta2 = (delta1 + (z.get().ybr[(y - 1)][(x + i)]));
+                    z.get().ybr[(y + j)][(x + i)] = (vp8_clip(delta2, 0, 255));
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func8_ve(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    {
+        let mut j = 0;
+        while (j < 8) {
+            {
+                let mut i = 0;
+                while (i < 8) {
+                    z.get().ybr[(y + j)][(x + i)] = z.get().ybr[(y - 1)][(x + i)];
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func8_he(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    {
+        let mut j = 0;
+        while (j < 8) {
+            {
+                let mut i = 0;
+                while (i < 8) {
+                    z.get().ybr[(y + j)][(x + i)] = z.get().ybr[(y + j)][(x - 1)];
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func8_dc_top(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut sum = (4);
+    {
+        let mut j = 0;
+        while (j < 8) {
+            sum = (sum + (z.get().ybr[(y + j)][(x - 1)]));
+            j = (j + 1);
+        }
+    };
+    let mut avg = ((sum / 8));
+    {
+        let mut j = 0;
+        while (j < 8) {
+            {
+                let mut i = 0;
+                while (i < 8) {
+                    z.get().ybr[(y + j)][(x + i)] = avg;
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func8_dc_left(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut sum = (4);
+    {
+        let mut i = 0;
+        while (i < 8) {
+            sum = (sum + (z.get().ybr[(y - 1)][(x + i)]));
+            i = (i + 1);
+        }
+    };
+    let mut avg = ((sum / 8));
+    {
+        let mut j = 0;
+        while (j < 8) {
+            {
+                let mut i = 0;
+                while (i < 8) {
+                    z.get().ybr[(y + j)][(x + i)] = avg;
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func8_dc_top_left(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    {
+        let mut j = 0;
+        while (j < 8) {
+            {
+                let mut i = 0;
+                while (i < 8) {
+                    z.get().ybr[(y + j)][(x + i)] = 0x80;
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func16_dc(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut sum = (16);
+    {
+        let mut i = 0;
+        while (i < 16) {
+            sum = (sum + (z.get().ybr[(y - 1)][(x + i)]));
+            i = (i + 1);
+        }
+    };
+    {
+        let mut j = 0;
+        while (j < 16) {
+            sum = (sum + (z.get().ybr[(y + j)][(x - 1)]));
+            j = (j + 1);
+        }
+    };
+    let mut avg = ((sum / 32));
+    {
+        let mut j = 0;
+        while (j < 16) {
+            {
+                let mut i = 0;
+                while (i < 16) {
+                    z.get().ybr[(y + j)][(x + i)] = avg;
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func16_tm(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut delta0 = (-(z.get().ybr[(y - 1)][(x - 1)]));
+    {
+        let mut j = 0;
+        while (j < 16) {
+            let mut delta1 = (delta0 + (z.get().ybr[(y + j)][(x - 1)]));
+            {
+                let mut i = 0;
+                while (i < 16) {
+                    let mut delta2 = (delta1 + (z.get().ybr[(y - 1)][(x + i)]));
+                    z.get().ybr[(y + j)][(x + i)] = (vp8_clip(delta2, 0, 255));
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func16_ve(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    {
+        let mut j = 0;
+        while (j < 16) {
+            {
+                let mut i = 0;
+                while (i < 16) {
+                    z.get().ybr[(y + j)][(x + i)] = z.get().ybr[(y - 1)][(x + i)];
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func16_he(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    {
+        let mut j = 0;
+        while (j < 16) {
+            {
+                let mut i = 0;
+                while (i < 16) {
+                    z.get().ybr[(y + j)][(x + i)] = z.get().ybr[(y + j)][(x - 1)];
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func16_dc_top(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut sum = (8);
+    {
+        let mut j = 0;
+        while (j < 16) {
+            sum = (sum + (z.get().ybr[(y + j)][(x - 1)]));
+            j = (j + 1);
+        }
+    };
+    let mut avg = ((sum / 16));
+    {
+        let mut j = 0;
+        while (j < 16) {
+            {
+                let mut i = 0;
+                while (i < 16) {
+                    z.get().ybr[(y + j)][(x + i)] = avg;
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func16_dc_left(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    let mut sum = (8);
+    {
+        let mut i = 0;
+        while (i < 16) {
+            sum = (sum + (z.get().ybr[(y - 1)][(x + i)]));
+            i = (i + 1);
+        }
+    };
+    let mut avg = ((sum / 16));
+    {
+        let mut j = 0;
+        while (j < 16) {
+            {
+                let mut i = 0;
+                while (i < 16) {
+                    z.get().ybr[(y + j)][(x + i)] = avg;
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func16_dc_top_left(z: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    let mut y = y;
+    let mut x = x;
+    {
+        let mut j = 0;
+        while (j < 16) {
+            {
+                let mut i = 0;
+                while (i < 16) {
+                    z.get().ybr[(y + j)][(x + i)] = 0x80;
+                    i = (i + 1);
+                }
+            };
+            j = (j + 1);
+        }
+    };
+}
+
+fn vp8_pred_func4(mode: isize, d: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    match mode {
+        0 => vp8_pred_func4_dc(d, y, x),
+        1 => vp8_pred_func4_tm(d, y, x),
+        2 => vp8_pred_func4_ve(d, y, x),
+        3 => vp8_pred_func4_he(d, y, x),
+        4 => vp8_pred_func4_rd(d, y, x),
+        5 => vp8_pred_func4_vr(d, y, x),
+        6 => vp8_pred_func4_ld(d, y, x),
+        7 => vp8_pred_func4_vl(d, y, x),
+        8 => vp8_pred_func4_hd(d, y, x),
+        9 => vp8_pred_func4_hu(d, y, x),
+        _ => (),
+    }
+}
+
+fn vp8_pred_func8(mode: isize, d: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    match mode {
+        0 => vp8_pred_func8_dc(d, y, x),
+        1 => vp8_pred_func8_tm(d, y, x),
+        2 => vp8_pred_func8_ve(d, y, x),
+        3 => vp8_pred_func8_he(d, y, x),
+        10 => vp8_pred_func8_dc_top(d, y, x),
+        11 => vp8_pred_func8_dc_left(d, y, x),
+        12 => vp8_pred_func8_dc_top_left(d, y, x),
+        _ => (),
+    }
+}
+
+fn vp8_pred_func16(mode: isize, d: Ref[Vp8Decoder], y: isize, x: isize) -> () {
+    match mode {
+        0 => vp8_pred_func16_dc(d, y, x),
+        1 => vp8_pred_func16_tm(d, y, x),
+        2 => vp8_pred_func16_ve(d, y, x),
+        3 => vp8_pred_func16_he(d, y, x),
+        10 => vp8_pred_func16_dc_top(d, y, x),
+        11 => vp8_pred_func16_dc_left(d, y, x),
+        12 => vp8_pred_func16_dc_top_left(d, y, x),
+        _ => (),
+    }
+}

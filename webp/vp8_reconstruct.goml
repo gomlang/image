@@ -1,0 +1,519 @@
+package webp;
+
+use std::bytes;
+
+const vp8_b_coeff_base: isize = 256;
+
+const vp8_r_coeff_base: isize = 320;
+
+const vp8_wht_coeff_base: isize = 384;
+
+const vp8_ybr_yx: isize = 8;
+
+const vp8_ybr_yy: isize = 1;
+
+const vp8_ybr_bx: isize = 8;
+
+const vp8_ybr_by: isize = 18;
+
+const vp8_ybr_rx: isize = 24;
+
+const vp8_ybr_ry: isize = 18;
+
+fn vp8_prepare_ybr(d: Ref[Vp8Decoder], mbx: isize, mby: isize) -> () {
+    let mut mbx = mbx;
+    let mut mby = mby;
+    if (mbx == 0) {
+        {
+            let mut y = 0;
+            while (y < 17) {
+                d.get().ybr[y][7] = 0x81;
+                y = (y + 1);
+            }
+        };
+        {
+            let mut y = 17;
+            while (y < 26) {
+                d.get().ybr[y][7] = 0x81;
+                d.get().ybr[y][23] = 0x81;
+                y = (y + 1);
+            }
+        };
+    } else {
+        {
+            let mut y = 0;
+            while (y < 17) {
+                d.get().ybr[y][7] = d.get().ybr[y][(7 + 16)];
+                y = (y + 1);
+            }
+        };
+        {
+            let mut y = 17;
+            while (y < 26) {
+                d.get().ybr[y][7] = d.get().ybr[y][15];
+                d.get().ybr[y][23] = d.get().ybr[y][31];
+                y = (y + 1);
+            }
+        };
+    }
+    if (mby == 0) {
+        {
+            let mut x = 7;
+            while (x < 28) {
+                d.get().ybr[0][x] = 0x7f;
+                x = (x + 1);
+            }
+        };
+        {
+            let mut x = 7;
+            while (x < 16) {
+                d.get().ybr[17][x] = 0x7f;
+                x = (x + 1);
+            }
+        };
+        {
+            let mut x = 23;
+            while (x < 32) {
+                d.get().ybr[17][x] = 0x7f;
+                x = (x + 1);
+            }
+        };
+    } else {
+        {
+            let mut i = 0;
+            while (i < 16) {
+                d.get().ybr[0][(8 + i)] = d.get().img.get().y.get(
+                    ((((((16 * mby) - 1)) * d.get().img.get().y_stride) + (16 * mbx)) + i),
+                ).to_isize();
+                i = (i + 1);
+            }
+        };
+        {
+            let mut i = 0;
+            while (i < 8) {
+                d.get().ybr[17][(8 + i)] = d.get().img.get().cb.get(
+                    ((((((8 * mby) - 1)) * d.get().img.get().c_stride) + (8 * mbx)) + i),
+                ).to_isize();
+                i = (i + 1);
+            }
+        };
+        {
+            let mut i = 0;
+            while (i < 8) {
+                d.get().ybr[17][(24 + i)] = d.get().img.get().cr.get(
+                    ((((((8 * mby) - 1)) * d.get().img.get().c_stride) + (8 * mbx)) + i),
+                ).to_isize();
+                i = (i + 1);
+            }
+        };
+        if (mbx == (d.get().mbw - 1)) {
+            {
+                let mut i = 16;
+                while (i < 20) {
+                    d.get().ybr[0][(8 + i)] = d.get().img.get().y.get(
+                        ((((((16 * mby) - 1)) * d.get().img.get().y_stride) + (16 * mbx)) + 15),
+                    ).to_isize();
+                    i = (i + 1);
+                }
+            };
+        } else {
+            {
+                let mut i = 16;
+                while (i < 20) {
+                    d.get().ybr[0][(8 + i)] = d.get().img.get().y.get(
+                        ((((((16 * mby) - 1)) * d.get().img.get().y_stride) + (16 * mbx)) + i),
+                    ).to_isize();
+                    i = (i + 1);
+                }
+            };
+        }
+    }
+    {
+        let mut y = 4;
+        while (y < 16) {
+            d.get().ybr[y][24] = d.get().ybr[0][24];
+            d.get().ybr[y][25] = d.get().ybr[0][25];
+            d.get().ybr[y][26] = d.get().ybr[0][26];
+            d.get().ybr[y][27] = d.get().ybr[0][27];
+            y = (y + 4);
+        }
+    };
+}
+
+fn vp8_btou(b: bool) -> isize {
+    if b {
+        return 1;
+    }
+    return 0;
+}
+
+fn vp8_pack(x: [isize; 4], shift: isize) -> isize {
+    let mut shift = shift;
+    let mut u = (((((x[0]) << 0) | ((x[1]) << 1)) | ((x[2]) << 2)) | ((x[3]) << 3));
+    return (u << (shift));
+}
+
+const vp8_unpack: [[isize; 4]; 16] = [
+    [0, 0, 0, 0],
+    [1, 0, 0, 0],
+    [0, 1, 0, 0],
+    [1, 1, 0, 0],
+    [0, 0, 1, 0],
+    [1, 0, 1, 0],
+    [0, 1, 1, 0],
+    [1, 1, 1, 0],
+    [0, 0, 0, 1],
+    [1, 0, 0, 1],
+    [0, 1, 0, 1],
+    [1, 1, 0, 1],
+    [0, 0, 1, 1],
+    [1, 0, 1, 1],
+    [0, 1, 1, 1],
+    [1, 1, 1, 1],
+];
+
+const vp8_bands: [isize; 17] = [0, 1, 2, 3, 6, 4, 5, 6, 6, 6, 6, 6, 6, 6, 6, 7, 0];
+
+const vp8_cat3456: [[isize; 12]; 4] = [
+    [173, 148, 140, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [176, 155, 140, 135, 0, 0, 0, 0, 0, 0, 0, 0],
+    [180, 157, 141, 134, 130, 0, 0, 0, 0, 0, 0, 0],
+    [254, 254, 243, 230, 196, 177, 153, 140, 133, 130, 129, 0],
+];
+
+const vp8_zigzag: [isize; 16] = [0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15];
+
+fn vp8_parse_residuals4(
+    d: Ref[Vp8Decoder],
+    r: Ref[Vp8Partition],
+    plane: isize,
+    context: isize,
+    quant: [isize; 2],
+    skip_first_coeff: bool,
+    coeff_base: isize,
+) -> isize {
+    let mut plane = plane;
+    let mut context = context;
+    let mut coeff_base = coeff_base;
+    let vp8_tmp_6_0 = d.get().token_prob[plane];
+    let vp8_tmp_6_1 = 0;
+    let mut prob = vp8_tmp_6_0;
+    let mut n = vp8_tmp_6_1;
+    if skip_first_coeff {
+        n = 1;
+    }
+    let mut p = prob[vp8_bands[n]][context];
+    if (!vp8_read_bit(r, p[0])) {
+        return 0;
+    }
+    {
+        while (n != 16) {
+            n = (n + 1);
+            if (!vp8_read_bit(r, p[1])) {
+                p = prob[vp8_bands[n]][0];
+                continue;
+            }
+            let mut v: isize = 0;
+            if (!vp8_read_bit(r, p[2])) {
+                v = 1;
+                p = prob[vp8_bands[n]][1];
+            } else {
+                if (!vp8_read_bit(r, p[3])) {
+                    if (!vp8_read_bit(r, p[4])) {
+                        v = 2;
+                    } else {
+                        v = (3 + vp8_read_uint(r, p[5], 1));
+                    }
+                } else if (!vp8_read_bit(r, p[6])) {
+                    if (!vp8_read_bit(r, p[7])) {
+                        v = (5 + vp8_read_uint(r, 159, 1));
+                    } else {
+                        v = ((7 + (2 * vp8_read_uint(r, 165, 1))) + vp8_read_uint(r, 145, 1));
+                    }
+                } else {
+                    let mut b1 = vp8_read_uint(r, p[8], 1);
+                    let mut b0 = vp8_read_uint(r, p[(9 + b1)], 1);
+                    let mut cat = ((2 * b1) + b0);
+                    let mut tab = vp8_cat3456[cat];
+                    v = 0;
+                    {
+                        let mut i = 0;
+                        while (tab[i] != 0) {
+                            v = (v * 2);
+                            v = (v + vp8_read_uint(r, tab[i], 1));
+                            i = (i + 1);
+                        }
+                    };
+                    v = (v + (3 + ((8 << cat))));
+                }
+                p = prob[vp8_bands[n]][2];
+            }
+            let mut z = vp8_zigzag[(n - 1)];
+            let mut c = ((v) * (quant[vp8_btou((z > 0))]));
+            if vp8_read_bit(r, vp8_uniform_prob) {
+                c = (-c);
+            }
+            d.get().coeff[(coeff_base + (z))] = vp8_i16(c);
+            if ((n == 16) || (!vp8_read_bit(r, p[0]))) {
+                return 1;
+            }
+        }
+    };
+    return 1;
+}
+
+fn vp8_parse_residuals(d: Ref[Vp8Decoder], mbx: isize, mby: isize) -> bool {
+    let mut mbx = mbx;
+    let mut mby = mby;
+    let mut skip: bool = false;
+    let mut partition = d.get().op[(mby & ((d.get().n_op - 1)))];
+    let mut plane = vp8_plane_y1_sans_y2;
+    let mut quant = d.get().quant[d.get().segment];
+    if d.get().use_pred_y16 {
+        let mut nz = vp8_parse_residuals4(
+            d,
+            partition,
+            vp8_plane_y2,
+            (d.get().left_mb.get().nz_y16 + d.get().up_mb[mbx].get().nz_y16),
+            quant.get().y2,
+            false,
+            vp8_wht_coeff_base,
+        );
+        d.get().left_mb.get().nz_y16 = nz;
+        d.get().up_mb[mbx].get().nz_y16 = nz;
+        vp8_inverse_wht16(d);
+        plane = vp8_plane_y1_with_y2;
+    }
+    let mut nz_dc: [isize; 4] = [0; 4];
+    let mut nz_ac: [isize; 4] = [0; 4];
+    let mut nz_dc_mask: isize = 0;
+    let mut nz_ac_mask: isize = 0;
+    let mut coeff_base: isize = 0;
+    let mut lnz = vp8_unpack[(d.get().left_mb.get().nz_mask & 0x0f)];
+    let mut unz = vp8_unpack[(d.get().up_mb[mbx].get().nz_mask & 0x0f)];
+    {
+        let mut y = 0;
+        while (y < 4) {
+            let mut nz = lnz[y];
+            {
+                let mut x = 0;
+                while (x < 4) {
+                    nz = vp8_parse_residuals4(
+                        d,
+                        partition,
+                        plane,
+                        (nz + unz[x]),
+                        quant.get().y1,
+                        d.get().use_pred_y16,
+                        coeff_base,
+                    );
+                    unz[x] = nz;
+                    nz_ac[x] = nz;
+                    nz_dc[x] = vp8_btou((d.get().coeff[coeff_base] != 0));
+                    coeff_base = (coeff_base + 16);
+                    x = (x + 1);
+                }
+            };
+            lnz[y] = nz;
+            nz_dc_mask = (nz_dc_mask | vp8_pack(nz_dc, (y * 4)));
+            nz_ac_mask = (nz_ac_mask | vp8_pack(nz_ac, (y * 4)));
+            y = (y + 1);
+        }
+    };
+    let mut lnz_mask = vp8_pack(lnz, 0);
+    let mut unz_mask = vp8_pack(unz, 0);
+    lnz = vp8_unpack[(d.get().left_mb.get().nz_mask >> 4)];
+    unz = vp8_unpack[(d.get().up_mb[mbx].get().nz_mask >> 4)];
+    {
+        let mut c = 0;
+        while (c < 4) {
+            {
+                let mut y = 0;
+                while (y < 2) {
+                    let mut nz = lnz[(y + c)];
+                    {
+                        let mut x = 0;
+                        while (x < 2) {
+                            nz = vp8_parse_residuals4(
+                                d,
+                                partition,
+                                vp8_plane_uv,
+                                (nz + unz[(x + c)]),
+                                quant.get().uv,
+                                false,
+                                coeff_base,
+                            );
+                            unz[(x + c)] = nz;
+                            nz_ac[((y * 2) + x)] = nz;
+                            nz_dc[((y * 2) + x)] = vp8_btou((d.get().coeff[coeff_base] != 0));
+                            coeff_base = (coeff_base + 16);
+                            x = (x + 1);
+                        }
+                    };
+                    lnz[(y + c)] = nz;
+                    y = (y + 1);
+                }
+            };
+            nz_dc_mask = (nz_dc_mask | vp8_pack(nz_dc, (16 + (c * 2))));
+            nz_ac_mask = (nz_ac_mask | vp8_pack(nz_ac, (16 + (c * 2))));
+            c = (c + 2);
+        }
+    };
+    lnz_mask = (lnz_mask | vp8_pack(lnz, 4));
+    unz_mask = (unz_mask | vp8_pack(unz, 4));
+    d.get().left_mb.get().nz_mask = (lnz_mask);
+    d.get().up_mb[mbx].get().nz_mask = (unz_mask);
+    d.get().nz_dc_mask = nz_dc_mask;
+    d.get().nz_ac_mask = nz_ac_mask;
+    return ((nz_dc_mask == 0) && (nz_ac_mask == 0));
+}
+
+fn vp8_reconstruct_macroblock(d: Ref[Vp8Decoder], mbx: isize, mby: isize) -> () {
+    let mut mbx = mbx;
+    let mut mby = mby;
+    if d.get().use_pred_y16 {
+        let mut p = vp8_check_top_left_pred(mbx, mby, d.get().pred_y16);
+        vp8_pred_func16(p, d, 1, 8);
+        {
+            let mut j = 0;
+            while (j < 4) {
+                {
+                    let mut i = 0;
+                    while (i < 4) {
+                        let mut n = ((4 * j) + i);
+                        let mut y = ((4 * j) + 1);
+                        let mut x = ((4 * i) + 8);
+                        let mut mask = ((1) << (n));
+                        if ((d.get().nz_ac_mask & mask) != 0) {
+                            vp8_inverse_dct4(d, y, x, (16 * n));
+                        } else if ((d.get().nz_dc_mask & mask) != 0) {
+                            vp8_inverse_dct4_dc_only(d, y, x, (16 * n));
+                        }
+                        i = (i + 1);
+                    }
+                };
+                j = (j + 1);
+            }
+        };
+    } else {
+        {
+            let mut j = 0;
+            while (j < 4) {
+                {
+                    let mut i = 0;
+                    while (i < 4) {
+                        let mut n = ((4 * j) + i);
+                        let mut y = ((4 * j) + 1);
+                        let mut x = ((4 * i) + 8);
+                        vp8_pred_func4(d.get().pred_y4[j][i], d, y, x);
+                        let mut mask = ((1) << (n));
+                        if ((d.get().nz_ac_mask & mask) != 0) {
+                            vp8_inverse_dct4(d, y, x, (16 * n));
+                        } else if ((d.get().nz_dc_mask & mask) != 0) {
+                            vp8_inverse_dct4_dc_only(d, y, x, (16 * n));
+                        }
+                        i = (i + 1);
+                    }
+                };
+                j = (j + 1);
+            }
+        };
+    }
+    let mut p = vp8_check_top_left_pred(mbx, mby, d.get().pred_c8);
+    vp8_pred_func8(p, d, vp8_ybr_by, vp8_ybr_bx);
+    if ((d.get().nz_ac_mask & 0x0f0000) != 0) {
+        vp8_inverse_dct8(d, vp8_ybr_by, vp8_ybr_bx, vp8_b_coeff_base);
+    } else if ((d.get().nz_dc_mask & 0x0f0000) != 0) {
+        vp8_inverse_dct8_dc_only(d, vp8_ybr_by, vp8_ybr_bx, vp8_b_coeff_base);
+    }
+    vp8_pred_func8(p, d, vp8_ybr_ry, vp8_ybr_rx);
+    if ((d.get().nz_ac_mask & 0xf00000) != 0) {
+        vp8_inverse_dct8(d, vp8_ybr_ry, vp8_ybr_rx, vp8_r_coeff_base);
+    } else if ((d.get().nz_dc_mask & 0xf00000) != 0) {
+        vp8_inverse_dct8_dc_only(d, vp8_ybr_ry, vp8_ybr_rx, vp8_r_coeff_base);
+    }
+}
+
+fn vp8_reconstruct(d: Ref[Vp8Decoder], mbx: isize, mby: isize) -> bool {
+    let mut mbx = mbx;
+    let mut mby = mby;
+    let mut skip: bool = false;
+    if d.get().segment_header.get().update_map {
+        if (!vp8_read_bit(d.get().fp, d.get().segment_header.get().prob[0])) {
+            d.get().segment = (vp8_read_uint(d.get().fp, d.get().segment_header.get().prob[1], 1));
+        } else {
+            d.get().segment = ((vp8_read_uint(d.get().fp, d.get().segment_header.get().prob[2], 1))
+                + 2);
+        }
+    }
+    if d.get().use_skip_prob {
+        skip = vp8_read_bit(d.get().fp, d.get().skip_prob);
+    }
+    for i in 0..400 {
+        d.get().coeff[i] = 0;
+    }
+    vp8_prepare_ybr(d, mbx, mby);
+    d.get().use_pred_y16 = vp8_read_bit(d.get().fp, 145);
+    if d.get().use_pred_y16 {
+        vp8_parse_pred_mode_y16(d, mbx);
+    } else {
+        vp8_parse_pred_mode_y4(d, mbx);
+    }
+    vp8_parse_pred_mode_c8(d);
+    if (!skip) {
+        skip = vp8_parse_residuals(d, mbx, mby);
+    } else {
+        if d.get().use_pred_y16 {
+            d.get().left_mb.get().nz_y16 = 0;
+            d.get().up_mb[mbx].get().nz_y16 = 0;
+        }
+        d.get().left_mb.get().nz_mask = 0;
+        d.get().up_mb[mbx].get().nz_mask = 0;
+        d.get().nz_dc_mask = 0;
+        d.get().nz_ac_mask = 0;
+    }
+    vp8_reconstruct_macroblock(d, mbx, mby);
+    {
+        let vp8_tmp_7_0 = ((((mby * d.get().img.get().y_stride) + mbx)) * 16);
+        let vp8_tmp_7_1 = 0;
+        let mut i = vp8_tmp_7_0;
+        let mut y = vp8_tmp_7_1;
+        while (y < 16) {
+            for vp8_copy_i in 0..((i + 16) - i) {
+                d.get().img.get().y.set(
+                    i + vp8_copy_i,
+                    (d.get().ybr[(vp8_ybr_yy + y)][vp8_ybr_yx + vp8_copy_i]).to_u8(),
+                );
+            }
+            let vp8_tmp_8_0 = (i + d.get().img.get().y_stride);
+            let vp8_tmp_8_1 = (y + 1);
+            i = vp8_tmp_8_0;
+            y = vp8_tmp_8_1;
+        }
+    };
+    {
+        let vp8_tmp_9_0 = ((((mby * d.get().img.get().c_stride) + mbx)) * 8);
+        let vp8_tmp_9_1 = 0;
+        let mut i = vp8_tmp_9_0;
+        let mut y = vp8_tmp_9_1;
+        while (y < 8) {
+            for vp8_copy_i in 0..((i + 8) - i) {
+                d.get().img.get().cb.set(
+                    i + vp8_copy_i,
+                    (d.get().ybr[(vp8_ybr_by + y)][vp8_ybr_bx + vp8_copy_i]).to_u8(),
+                );
+            }
+            for vp8_copy_i in 0..((i + 8) - i) {
+                d.get().img.get().cr.set(
+                    i + vp8_copy_i,
+                    (d.get().ybr[(vp8_ybr_ry + y)][vp8_ybr_rx + vp8_copy_i]).to_u8(),
+                );
+            }
+            let vp8_tmp_10_0 = (i + d.get().img.get().c_stride);
+            let vp8_tmp_10_1 = (y + 1);
+            i = vp8_tmp_10_0;
+            y = vp8_tmp_10_1;
+        }
+    };
+    return skip;
+}

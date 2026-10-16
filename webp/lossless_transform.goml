@@ -1,0 +1,177 @@
+package webp;
+
+use ecosystem::image::{Error};
+
+fn l_channel(pixel: u32, shift: isize) -> isize {
+    ((pixel >> shift) & 255).to_isize()
+}
+
+fn l_add(a: u32, b: u32) -> u32 {
+    let low = (a & 0x00ff00ff) + (b & 0x00ff00ff);
+    let high = ((a >> 8) & 0x00ff00ff) + ((b >> 8) & 0x00ff00ff);
+    (low & 0x00ff00ff) | ((high & 0x00ff00ff) << 8)
+}
+
+fn l_sub(a: u32, b: u32) -> u32 {
+    let mut result: u32 = 0;
+    for channel in 0..4 {
+        let shift = channel * 8;
+        result |= ((l_channel(a, shift) - l_channel(b, shift)) & 255).to_u32() << shift;
+    }
+    result
+}
+
+fn l_average(a: u32, b: u32) -> u32 {
+    (a & b) + (((a ^ b) & 0xfefefefe) >> 1)
+}
+
+fn l_clamp(value: isize) -> isize {
+    if value < 0 {
+        0
+    } else if value > 255 {
+        255
+    } else {
+        value
+    }
+}
+
+fn l_abs(value: isize) -> isize {
+    if value < 0 {
+        -value
+    } else {
+        value
+    }
+}
+
+fn l_signed(value: isize) -> isize {
+    if value < 128 {
+        value
+    } else {
+        value - 256
+    }
+}
+
+fn l_predict(mode: isize, left: u32, top: u32, top_left: u32, top_right: u32) -> Result[u32, Error] {
+    match mode {
+        0 => Result::Ok(0xff000000),
+        1 => Result::Ok(left),
+        2 => Result::Ok(top),
+        3 => Result::Ok(top_right),
+        4 => Result::Ok(top_left),
+        5 => Result::Ok(l_average(l_average(left, top_right), top)),
+        6 => Result::Ok(l_average(left, top_left)),
+        7 => Result::Ok(l_average(left, top)),
+        8 => Result::Ok(l_average(top_left, top)),
+        9 => Result::Ok(l_average(top, top_right)),
+        10 => Result::Ok(l_average(l_average(left, top_left), l_average(top, top_right))),
+        11 => {
+            let mut left_distance = 0;
+            let mut top_distance = 0;
+            for channel in 0..4 {
+                let shift = 8 * channel;
+                left_distance += l_abs(l_channel(top_left, shift) - l_channel(top, shift));
+                top_distance += l_abs(l_channel(top_left, shift) - l_channel(left, shift));
+            }
+            Result::Ok(
+                if left_distance < top_distance {
+                    left
+                } else {
+                    top
+                },
+            )
+        },
+        12 => {
+            let mut pixel: u32 = 0;
+            for channel in 0..4 {
+                let shift = channel * 8;
+                let value = l_clamp(
+                    l_channel(left, shift) + l_channel(top, shift) - l_channel(top_left, shift),
+                );
+                pixel |= value.to_u32() << shift;
+            }
+            Result::Ok(pixel)
+        },
+        13 => {
+            let average = l_average(left, top);
+            let mut pixel: u32 = 0;
+            for channel in 0..4 {
+                let shift = channel * 8;
+                let value = l_channel(average, shift);
+                pixel |= l_clamp(value + (value - l_channel(top_left, shift)) / 2).to_u32() << shift;
+            }
+            Result::Ok(pixel)
+        },
+        _ => Result::Err(Error::Codec("invalid VP8L prediction mode")),
+    }
+}
+
+fn l_inverse(transform: LTransform, pixels: Vec[u32], height: isize) -> Result[Vec[u32], Error] {
+    let width = transform.width;
+    if transform.kind == 0 {
+        for y in 0..height {
+            for x in 0..width {
+                let index = y * width + x;
+                let prediction = if y == 0 {
+                    if x == 0 {
+                        0xff000000
+                    } else {
+                        pixels[index - 1]
+                    }
+                } else if x == 0 {
+                    pixels[index - width]
+                } else {
+                    let tile = (y >> transform.bits) * l_tiles(width, transform.bits)
+                        + (x >> transform.bits);
+                    let mode = l_channel(transform.pixels[tile], 8) & 15;
+                    l_predict(
+                        mode,
+                        pixels[index - 1],
+                        pixels[index - width],
+                        pixels[index - width - 1],
+                        pixels[index - width + 1],
+                    )?
+                };
+                pixels[index] = l_add(pixels[index], prediction);
+            }
+        }
+    } else if transform.kind == 1 {
+        for y in 0..height {
+            for x in 0..width {
+                let index = y * width + x;
+                let tile = (y >> transform.bits) * l_tiles(width, transform.bits)
+                    + (x >> transform.bits);
+                let multipliers = transform.pixels[tile];
+                let pixel = pixels[index];
+                let green = l_signed(l_channel(pixel, 8));
+                let red = (l_channel(pixel, 16)
+                    + ((l_signed(l_channel(multipliers, 0)) * green) >> 5))
+                    & 255;
+                let blue = (l_channel(pixel, 0)
+                    + ((l_signed(l_channel(multipliers, 8)) * green) >> 5)
+                    + ((l_signed(l_channel(multipliers, 16)) * l_signed(red)) >> 5))
+                    & 255;
+                pixels[index] = (pixel & 0xff00ff00) | (red.to_u32() << 16) | blue.to_u32();
+            }
+        }
+    } else if transform.kind == 2 {
+        for index in 0..pixels.len() {
+            let pixel = pixels[index];
+            let green = (pixel >> 8) & 255;
+            pixels[index] = l_add(pixel, green | (green << 16));
+        }
+    } else {
+        let result = Vec::with_capacity(width * height);
+        let packed_width = l_tiles(width, transform.bits);
+        let bits_per_pixel = 8 >> transform.bits;
+        let mask = (1 << bits_per_pixel) - 1;
+        for y in 0..height {
+            for x in 0..width {
+                let packed = l_channel(pixels[y * packed_width + (x >> transform.bits)], 8);
+                let index = (packed >> ((x & ((1 << transform.bits) - 1)) * bits_per_pixel)) & mask;
+                result.push(transform.pixels[index]);
+            }
+        }
+        return Result::Ok(result)
+    }
+    Result::Ok(pixels)
+}

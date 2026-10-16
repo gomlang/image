@@ -1,0 +1,77 @@
+package webp;
+
+use std::bytes;
+
+fn vp8_parse_segment_header(d: Ref[Vp8Decoder]) -> () {
+    d.get().segment_header.get().use_segment = vp8_read_bit(d.get().fp, vp8_uniform_prob);
+    if (!d.get().segment_header.get().use_segment) {
+        d.get().segment_header.get().update_map = false;
+        return;
+    }
+    d.get().segment_header.get().update_map = vp8_read_bit(d.get().fp, vp8_uniform_prob);
+    if vp8_read_bit(d.get().fp, vp8_uniform_prob) {
+        d.get().segment_header.get().relative_delta = (!vp8_read_bit(d.get().fp, vp8_uniform_prob));
+        for i in 0..4 {
+            d.get().segment_header.get().quantizer[i] = (vp8_read_optional_int(
+                d.get().fp,
+                vp8_uniform_prob,
+                7,
+            ));
+        }
+        for i in 0..4 {
+            d.get().segment_header.get().filter_strength[i] = (vp8_read_optional_int(
+                d.get().fp,
+                vp8_uniform_prob,
+                6,
+            ));
+        }
+    }
+    if (!d.get().segment_header.get().update_map) {
+        return;
+    }
+    for i in 0..3 {
+        if vp8_read_bit(d.get().fp, vp8_uniform_prob) {
+            d.get().segment_header.get().prob[i] = (vp8_read_uint(d.get().fp, vp8_uniform_prob, 8));
+        } else {
+            d.get().segment_header.get().prob[i] = 0xff;
+        }
+    }
+}
+
+fn vp8_parse_filter_header(d: Ref[Vp8Decoder]) -> () {
+    d.get().filter_header.get().simple = vp8_read_bit(d.get().fp, vp8_uniform_prob);
+    d.get().filter_header.get().level = (vp8_read_uint(d.get().fp, vp8_uniform_prob, 6));
+    d.get().filter_header.get().sharpness = (vp8_read_uint(d.get().fp, vp8_uniform_prob, 3));
+    d.get().filter_header.get().use_lf_delta = vp8_read_bit(d.get().fp, vp8_uniform_prob);
+    if (d.get().filter_header.get().use_lf_delta && vp8_read_bit(d.get().fp, vp8_uniform_prob)) {
+        for i in 0..4 {
+            d.get().filter_header.get().ref_lf_delta[i] = (vp8_read_optional_int(
+                d.get().fp,
+                vp8_uniform_prob,
+                6,
+            ));
+        }
+        for i in 0..4 {
+            d.get().filter_header.get().mode_lf_delta[i] = (vp8_read_optional_int(
+                d.get().fp,
+                vp8_uniform_prob,
+                6,
+            ));
+        }
+    }
+    if (d.get().filter_header.get().level == 0) {
+        return;
+    }
+    if d.get().segment_header.get().use_segment {
+        for i in 0..4 {
+            let mut strength = d.get().segment_header.get().filter_strength[i];
+            if d.get().segment_header.get().relative_delta {
+                strength = (strength + d.get().filter_header.get().level);
+            }
+            d.get().filter_header.get().per_segment_level[i] = strength;
+        }
+    } else {
+        d.get().filter_header.get().per_segment_level[0] = d.get().filter_header.get().level;
+    }
+    vp8_compute_filter_params(d);
+}

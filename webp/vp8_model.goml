@@ -1,0 +1,226 @@
+package webp;
+
+use std::bytes;
+
+struct Vp8FrameHeader {
+    key_frame: bool,
+    version_number: isize,
+    show_frame: bool,
+    first_partition_len: isize,
+    width: isize,
+    height: isize,
+    x_scale: isize,
+    y_scale: isize,
+}
+
+fn vp8_new_frame_header() -> Ref[Vp8FrameHeader] {
+    Ref::new(
+        Vp8FrameHeader {
+            key_frame: false,
+            version_number: 0,
+            show_frame: false,
+            first_partition_len: 0,
+            width: 0,
+            height: 0,
+            x_scale: 0,
+            y_scale: 0,
+        },
+    )
+}
+
+struct Vp8SegmentHeader {
+    use_segment: bool,
+    update_map: bool,
+    relative_delta: bool,
+    quantizer: [isize; 4],
+    filter_strength: [isize; 4],
+    prob: [isize; 3],
+}
+
+fn vp8_new_segment_header() -> Ref[Vp8SegmentHeader] {
+    Ref::new(
+        Vp8SegmentHeader {
+            use_segment: false,
+            update_map: false,
+            relative_delta: false,
+            quantizer: [0; 4],
+            filter_strength: [0; 4],
+            prob: [0; 3],
+        },
+    )
+}
+
+struct Vp8FilterHeader {
+    simple: bool,
+    level: isize,
+    sharpness: isize,
+    use_lf_delta: bool,
+    ref_lf_delta: [isize; 4],
+    mode_lf_delta: [isize; 4],
+    per_segment_level: [isize; 4],
+}
+
+fn vp8_new_filter_header() -> Ref[Vp8FilterHeader] {
+    Ref::new(
+        Vp8FilterHeader {
+            simple: false,
+            level: 0,
+            sharpness: 0,
+            use_lf_delta: false,
+            ref_lf_delta: [0; 4],
+            mode_lf_delta: [0; 4],
+            per_segment_level: [0; 4],
+        },
+    )
+}
+
+struct Vp8Mb {
+    pred: [isize; 4],
+    nz_mask: isize,
+    nz_y16: isize,
+}
+
+fn vp8_new_mb() -> Ref[Vp8Mb] {
+    Ref::new(Vp8Mb { pred: [0; 4], nz_mask: 0, nz_y16: 0 })
+}
+
+struct Vp8Decoder {
+    img: Ref[Vp8YCbCr],
+    mbw: isize,
+    mbh: isize,
+    frame_header: Ref[Vp8FrameHeader],
+    segment_header: Ref[Vp8SegmentHeader],
+    filter_header: Ref[Vp8FilterHeader],
+    fp: Ref[Vp8Partition],
+    op: [Ref[Vp8Partition]; 8],
+    n_op: isize,
+    quant: [Ref[Vp8Quant]; 4],
+    token_prob: [[[[isize; 11]; 3]; 8]; 4],
+    use_skip_prob: bool,
+    skip_prob: isize,
+    filter_params: [[Ref[Vp8FilterParam]; 2]; 4],
+    per_mb_filter_params: Vec[Ref[Vp8FilterParam]],
+    segment: isize,
+    left_mb: Ref[Vp8Mb],
+    up_mb: Vec[Ref[Vp8Mb]],
+    nz_dc_mask: isize,
+    nz_ac_mask: isize,
+    use_pred_y16: bool,
+    pred_y16: isize,
+    pred_c8: isize,
+    pred_y4: [[isize; 4]; 4],
+    coeff: [isize; 400],
+    ybr: [[isize; 32]; 26],
+}
+
+fn vp8_new_decoder() -> Ref[Vp8Decoder] {
+    Ref::new(
+        Vp8Decoder {
+            img: vp8_new_y_cb_cr(),
+            mbw: 0,
+            mbh: 0,
+            frame_header: vp8_new_frame_header(),
+            segment_header: vp8_new_segment_header(),
+            filter_header: vp8_new_filter_header(),
+            fp: vp8_new_partition(),
+            op: [
+                vp8_new_partition(),
+                vp8_new_partition(),
+                vp8_new_partition(),
+                vp8_new_partition(),
+                vp8_new_partition(),
+                vp8_new_partition(),
+                vp8_new_partition(),
+                vp8_new_partition(),
+            ],
+            n_op: 0,
+            quant: [vp8_new_quant(), vp8_new_quant(), vp8_new_quant(), vp8_new_quant()],
+            token_prob: [[[[0; 11]; 3]; 8]; 4],
+            use_skip_prob: false,
+            skip_prob: 0,
+            filter_params: [
+                [vp8_new_filter_param(), vp8_new_filter_param()],
+                [vp8_new_filter_param(), vp8_new_filter_param()],
+                [vp8_new_filter_param(), vp8_new_filter_param()],
+                [vp8_new_filter_param(), vp8_new_filter_param()],
+            ],
+            per_mb_filter_params: Vec::new(),
+            segment: 0,
+            left_mb: vp8_new_mb(),
+            up_mb: Vec::new(),
+            nz_dc_mask: 0,
+            nz_ac_mask: 0,
+            use_pred_y16: false,
+            pred_y16: 0,
+            pred_c8: 0,
+            pred_y4: [[0; 4]; 4],
+            coeff: [0; 400],
+            ybr: [[0; 32]; 26],
+        },
+    )
+}
+
+struct Vp8FilterParam {
+    level: isize,
+    ilevel: isize,
+    hlevel: isize,
+    inner: bool,
+}
+
+fn vp8_new_filter_param() -> Ref[Vp8FilterParam] {
+    Ref::new(Vp8FilterParam { level: 0, ilevel: 0, hlevel: 0, inner: false })
+}
+
+struct Vp8Partition {
+    buf: bytes::Bytes,
+    r: isize,
+    end: isize,
+    range_m1: isize,
+    bits: isize,
+    n_bits: isize,
+    unexpected_eof: bool,
+}
+
+fn vp8_new_partition() -> Ref[Vp8Partition] {
+    Ref::new(
+        Vp8Partition {
+            buf: bytes::Bytes::new(),
+            r: 0,
+            end: 0,
+            range_m1: 0,
+            bits: 0,
+            n_bits: 0,
+            unexpected_eof: false,
+        },
+    )
+}
+
+struct Vp8Quant {
+    y1: [isize; 2],
+    y2: [isize; 2],
+    uv: [isize; 2],
+}
+
+fn vp8_new_quant() -> Ref[Vp8Quant] {
+    Ref::new(Vp8Quant { y1: [0; 2], y2: [0; 2], uv: [0; 2] })
+}
+
+struct Vp8YCbCr {
+    y: bytes::Bytes,
+    cb: bytes::Bytes,
+    cr: bytes::Bytes,
+    y_stride: isize,
+    c_stride: isize,
+}
+
+fn vp8_new_y_cb_cr() -> Ref[Vp8YCbCr] {
+    Ref::new(
+        Vp8YCbCr {
+            y: bytes::Bytes::new(),
+            cb: bytes::Bytes::new(),
+            cr: bytes::Bytes::new(),
+            y_stride: 0,
+            c_stride: 0,
+        },
+    )
+}

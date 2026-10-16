@@ -1,9 +1,9 @@
 # jpeg
 
-`ecosystem::image::jpeg` decodes JPEG and encodes baseline JPEG through Go's
-[`image/jpeg`](https://pkg.go.dev/image/jpeg) backend. Baseline and progressive
-JPEG decoding is supported; arithmetic-coded, lossless and higher-bit-depth
-JPEG variants follow the backend's unsupported-format errors.
+`ecosystem::image::jpeg` decodes JPEG and encodes baseline JPEG in GoML. Baseline and progressive
+JPEG decoding supports grayscale, RGB, YCbCr, CMYK and YCCK images, component
+subsampling and restart intervals. Arithmetic-coded, lossless and higher-bit-depth
+JPEG variants are not supported.
 
 `decode(bytes)`, `decode_with_limits(bytes, codecs::Limits)` and `encode(image)`
 return the parent image package's `Result` and `Error` types. `JpegCodec`
@@ -21,9 +21,10 @@ JPEG encoding is lossy, including at quality 100.
 The shared [`codecs::Limits`](../codecs/README.md) checks the encoded input and
 header dimensions before decoding or allocating the output pixel buffer. Output
 writes are bounded. EXIF orientation is not applied; EXIF, ICC, comments and other
-metadata are not preserved. Color management is not performed. The backend can
+metadata are not preserved. Color management is not performed. The decoder can
 accept trailing data after a completed JPEG; use a container-level framing check
 when a protocol requires an exact datastream boundary.
 
-See the root README for native adapter setup; Go 1.26 is required, with no C
-compiler or system codec library requirement.
+The integer transforms and Huffman coding follow Go's `image/jpeg` implementation;
+see [third-party notices](../THIRD_PARTY_NOTICES.md) for attribution. No native
+adapter or external codec library is required.

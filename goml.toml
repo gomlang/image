@@ -4,6 +4,3 @@ path = "ecosystem::image"
 [dependencies]
 "ecosystem::color" = true
 "ecosystem::compress" = true
-
-[native]
-go-module = "example.com/goml-ecosystem/image"

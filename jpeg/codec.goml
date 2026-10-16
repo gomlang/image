@@ -2,11 +2,8 @@ package jpeg;
 
 use ecosystem::image::{Image, Codec, Error};
 use ecosystem::image::codecs::{Limits};
-use ecosystem::image::codecs;
-use ecosystem::image::native;
 use ecosystem::color::{Rgba8};
 use std::bytes;
-use std::ffi;
 
 pub struct JpegCodec {
     limits: Limits,
@@ -47,20 +44,7 @@ impl Codec for JpegCodec {
     }
 
     fn encode(self: JpegCodec, image: Image) -> Result[bytes::Bytes, Error] {
-        self.limits.check_image(image)?;
-        let bounds = image.bounds();
-        let (data, failure) = native::encode_jpeg(
-            codecs::pack(image),
-            bounds.width(),
-            bounds.height(),
-            self.limits.max_dimension,
-            self.limits.max_pixels,
-            self.limits.max_decoded_bytes,
-            self.limits.max_output_bytes,
-            self.quality,
-            self.background,
-        );
-        codecs::encoded(data, failure)
+        encode_image(image, self.limits, self.quality, self.background)
     }
 }
 
@@ -69,15 +53,7 @@ pub fn decode(data: bytes::Bytes) -> Result[Image, Error] {
 }
 
 pub fn decode_with_limits(data: bytes::Bytes, limits: Limits) -> Result[Image, Error] {
-    limits.check_input(data)?;
-    let (raw, width, height, failure) = native::decode_jpeg(
-        ffi::string_from_bytes(data),
-        limits.max_input_bytes,
-        limits.max_dimension,
-        limits.max_pixels,
-        limits.max_decoded_bytes,
-    );
-    codecs::unpack(raw, width, height, failure)
+    decode_image(data, limits)
 }
 
 pub fn encode(image: Image) -> Result[bytes::Bytes, Error] {

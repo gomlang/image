@@ -1,0 +1,208 @@
+package webp;
+
+use std::bytes;
+use ecosystem::image::{Error};
+
+const vp8_uniform_prob: isize = 128;
+
+const vp8_n_segment: isize = 4;
+
+fn vp8_i16(value: isize) -> isize {
+    let wrapped = value & 65535;
+    if wrapped >= 32768 {
+        wrapped - 65536
+    } else {
+        wrapped
+    }
+}
+
+fn vp8_partition(data: bytes::Bytes, start: isize, end: isize) -> Ref[Vp8Partition] {
+    Ref::new(
+        Vp8Partition {
+            buf: data,
+            r: start,
+            end,
+            range_m1: 254,
+            bits: 0,
+            n_bits: 0,
+            unexpected_eof: false,
+        },
+    )
+}
+
+fn vp8_read_bit(p: Ref[Vp8Partition], probability: isize) -> bool {
+    if p.get().n_bits < 8 {
+        if p.get().r >= p.get().end {
+            p.get().unexpected_eof = true;
+            return false
+        }
+        p.get().bits |= p.get().buf.get(p.get().r).to_isize() << (8 - p.get().n_bits);
+        p.get().r += 1;
+        p.get().n_bits += 8;
+    }
+    let split = ((p.get().range_m1 * probability) >> 8) + 1;
+    let bit = p.get().bits >= split << 8;
+    if bit {
+        p.get().range_m1 -= split;
+        p.get().bits -= split << 8;
+    } else {
+        p.get().range_m1 = split - 1;
+    }
+    while p.get().range_m1 < 127 {
+        p.get().range_m1 = (p.get().range_m1 << 1) + 1;
+        p.get().bits <<= 1;
+        p.get().n_bits -= 1;
+    }
+    bit
+}
+
+fn vp8_read_uint(p: Ref[Vp8Partition], probability: isize, count: isize) -> isize {
+    let mut value = 0;
+    let mut remaining = count;
+    while remaining > 0 {
+        remaining -= 1;
+        if vp8_read_bit(p, probability) {
+            value |= 1 << remaining;
+        }
+    }
+    value
+}
+
+fn vp8_read_optional_int(p: Ref[Vp8Partition], probability: isize, count: isize) -> isize {
+    if !vp8_read_bit(p, probability) {
+        return 0
+    }
+    let value = vp8_read_uint(p, probability, count);
+    if vp8_read_bit(p, probability) {
+        -value
+    } else {
+        value
+    }
+}
+
+fn vp8_fill_bytes(size: isize) -> bytes::Bytes {
+    let result = bytes::Bytes::with_capacity(size);
+    for _ in 0..size {
+        result.push(0);
+    }
+    result
+}
+
+fn vp8_open(data: bytes::Bytes, width: isize, height: isize) -> Result[Ref[Vp8Decoder], Error] {
+    if data.len() < 10 || width <= 0 || height <= 0 || width > 16383 || height > 16383 {
+        return Result::Err(Error::Codec("invalid VP8 frame dimensions or header"))
+    }
+    let tag = data.get(0).to_isize() | (data.get(1).to_isize() << 8)
+        | (data.get(2).to_isize() << 16);
+    let encoded_width = data.get(6).to_isize() | ((data.get(7).to_isize() & 63) << 8);
+    let encoded_height = data.get(8).to_isize() | ((data.get(9).to_isize() & 63) << 8);
+    if tag & 1 != 0 || ((tag >> 1) & 7) > 3 || data.get(3) != 157 || data.get(4) != 1
+        || data.get(5) != 42
+        || encoded_width != width
+        || encoded_height != height {
+        return Result::Err(Error::Codec("invalid VP8 keyframe header"))
+    }
+    let first_end = 10 + (tag >> 5);
+    if first_end > data.len() {
+        return Result::Err(Error::Codec("truncated VP8 first partition"))
+    }
+    let d = vp8_new_decoder();
+    d.get().frame_header.get().key_frame = true;
+    d.get().frame_header.get().width = width;
+    d.get().frame_header.get().height = height;
+    d.get().mbw = (width + 15) >> 4;
+    d.get().mbh = (height + 15) >> 4;
+    d.get().segment_header.get().prob = [255, 255, 255];
+    d.get().token_prob = vp8_default_token_prob;
+    d.get().fp = vp8_partition(data, 10, first_end);
+    vp8_read_bit(d.get().fp, 128);
+    vp8_read_bit(d.get().fp, 128);
+    vp8_parse_segment_header(d);
+    vp8_parse_filter_header(d);
+    let partitions = 1 << vp8_read_uint(d.get().fp, 128, 2);
+    d.get().n_op = partitions;
+    let table_size = 3 * (partitions - 1);
+    if table_size > data.len() - first_end {
+        return Result::Err(Error::Codec("truncated VP8 partition table"))
+    }
+    let mut start = first_end + table_size;
+    for i in 0..partitions {
+        let mut length = data.len() - start;
+        if i + 1 < partitions {
+            let offset = first_end + 3 * i;
+            length = data.get(offset).to_isize() | (data.get(offset + 1).to_isize() << 8)
+                | (data.get(offset + 2).to_isize() << 16);
+        }
+        if length > data.len() - start || length >= 16777216 {
+            return Result::Err(Error::Codec("invalid VP8 coefficient partition length"))
+        }
+        d.get().op[i] = vp8_partition(data, start, start + length);
+        start += length;
+    }
+    vp8_parse_quant(d);
+    vp8_read_bit(d.get().fp, 128);
+    vp8_parse_token_prob(d);
+    d.get().use_skip_prob = vp8_read_bit(d.get().fp, 128);
+    if d.get().use_skip_prob {
+        d.get().skip_prob = vp8_read_uint(d.get().fp, 128, 8);
+    }
+    if d.get().fp.get().unexpected_eof {
+        return Result::Err(Error::Codec("truncated VP8 frame header bits"))
+    }
+    let image = d.get().img;
+    image.get().y_stride = d.get().mbw * 16;
+    image.get().c_stride = d.get().mbw * 8;
+    image.get().y = vp8_fill_bytes(d.get().mbw * d.get().mbh * 256);
+    image.get().cb = vp8_fill_bytes(d.get().mbw * d.get().mbh * 64);
+    image.get().cr = vp8_fill_bytes(d.get().mbw * d.get().mbh * 64);
+    for _ in 0..d.get().mbw {
+        d.get().up_mb.push(vp8_new_mb());
+    }
+    Result::Ok(d)
+}
+
+fn decode_vp8(data: bytes::Bytes, width: isize, height: isize) -> Result[Vec[u32], Error] {
+    let d = vp8_open(data, width, height)?;
+    for mby in 0..d.get().mbh {
+        d.get().left_mb = vp8_new_mb();
+        for mbx in 0..d.get().mbw {
+            let skip = vp8_reconstruct(d, mbx, mby);
+            if d.get().fp.get().unexpected_eof
+                || d.get().op[mby & (d.get().n_op - 1)].get().unexpected_eof {
+                return Result::Err(Error::Codec("truncated VP8 macroblock bits"))
+            }
+            let source = d.get().filter_params[d.get().segment][vp8_btou(!d.get().use_pred_y16)];
+            let filter = Ref::new(
+                Vp8FilterParam {
+                    level: source.get().level,
+                    ilevel: source.get().ilevel,
+                    hlevel: source.get().hlevel,
+                    inner: source.get().inner || !skip,
+                },
+            );
+            d.get().per_mb_filter_params.push(filter);
+        }
+    }
+    if d.get().filter_header.get().level != 0 {
+        if d.get().filter_header.get().simple {
+            vp8_simple_filter(d);
+        } else {
+            vp8_normal_filter(d);
+        }
+    }
+    let image = d.get().img;
+    let result: Vec[u32] = Vec::with_capacity(width * height);
+    for row in 0..height {
+        for column in 0..width {
+            let y = image.get().y.get(row * image.get().y_stride + column).to_isize() - 16;
+            let offset = (row >> 1) * image.get().c_stride + (column >> 1);
+            let u = image.get().cb.get(offset).to_isize() - 128;
+            let v = image.get().cr.get(offset).to_isize() - 128;
+            let r = vp8_clip8((19077 * y + 26149 * v + 8192) >> 14).to_u32();
+            let g = vp8_clip8((19077 * y - 6419 * u - 13320 * v + 8192) >> 14).to_u32();
+            let b = vp8_clip8((19077 * y + 33050 * u + 8192) >> 14).to_u32();
+            result.push(4278190080 | (r << 16) | (g << 8) | b);
+        }
+    }
+    Result::Ok(result)
+}

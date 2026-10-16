@@ -10,6 +10,5 @@ This example shares the library root manifest and its dependencies. From the lib
 `thumbnail(source)` demonstrates strict cropping and bilinear resize. The example
 then encodes JPEG (white alpha background) and lossless WebP. Its example
 test loads a checked-in Pillow/libwebp fixture, checks corner pixels,
-and transcodes the resized output into PNG and JPEG. The library-level native
-adapter setup is described in the root README. The example shares the root
-Go module.
+and transcodes the resized output into PNG and JPEG. The example uses the
+library's GoML codecs and shares its manifest dependencies.

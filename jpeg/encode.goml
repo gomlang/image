@@ -1,0 +1,326 @@
+package jpeg;
+
+use ecosystem::image::{Image, Error};
+use ecosystem::image::codecs::{Limits};
+use std::bytes;
+
+struct Writer {
+    data: bytes::Bytes,
+    limit: isize,
+    bits: Ref[isize],
+    available: Ref[isize],
+    huffman: Vec[Vec[isize]],
+    quantization: Vec[Vec[isize]],
+    order: Vec[isize],
+}
+
+impl Writer {
+    fn new(limit: isize, quality: isize) -> Writer {
+        let huffman = Vec::new();
+        for index in 0..4 {
+            let counts = encoding_counts(index);
+            let values = encoding_values(index);
+            let table = integers(256, 0);
+            let mut code = 0;
+            let mut position = 0;
+            for length in 1..17 {
+                for _ in 0..counts[length - 1] {
+                    table[values[position]] = (length << 16) | code;
+                    position += 1;
+                    code += 1;
+                }
+                code <<= 1;
+            }
+            huffman.push(table);
+        }
+        let scale = if quality < 50 {
+            5000 / quality
+        } else {
+            200 - quality * 2
+        };
+        let quantization = Vec::new();
+        for index in 0..2 {
+            let table = base_quantization(index);
+            for position in 0..64 {
+                let scaled = (table[position] * scale + 50) / 100;
+                table[position] = if scaled < 1 {
+                    1
+                } else if scaled > 255 {
+                    255
+                } else {
+                    scaled
+                };
+            }
+            quantization.push(table);
+        }
+        Writer {
+            data: bytes::Bytes::new(),
+            limit,
+            bits: Ref::new(0),
+            available: Ref::new(0),
+            huffman,
+            quantization,
+            order: zigzag(),
+        }
+    }
+
+    fn byte(self: Writer, value: isize) -> Result[(), Error] {
+        if self.data.len() >= self.limit {
+            return Result::Err(failure("output byte limit exceeded"))
+        }
+        self.data.push(value.to_u8());
+        Result::Ok(())
+    }
+
+    fn word(self: Writer, value: isize) -> Result[(), Error] {
+        self.byte(value >> 8)?;
+        self.byte(value & 255)
+    }
+
+    fn marker(self: Writer, marker: isize) -> Result[(), Error] {
+        self.byte(255)?;
+        self.byte(marker)
+    }
+
+    fn emit(self: Writer, value: isize, length: isize) -> Result[(), Error] {
+        self.bits.set((self.bits.get() << length) | (value & ((1 << length) - 1)));
+        self.available.set(self.available.get() + length);
+        while self.available.get() >= 8 {
+            self.available.set(self.available.get() - 8);
+            let byte = (self.bits.get() >> self.available.get()) & 255;
+            self.byte(byte)?;
+            if byte == 255 {
+                self.byte(0)?;
+            }
+        }
+        self.bits.set(self.bits.get() & ((1 << self.available.get()) - 1));
+        Result::Ok(())
+    }
+
+    fn symbol(self: Writer, table: isize, symbol: isize) -> Result[(), Error] {
+        let code = self.huffman[table][symbol];
+        if code == 0 {
+            return Result::Err(failure("invalid coefficient category"))
+        }
+        self.emit(code & 65535, code >> 16)
+    }
+
+    fn coefficient(self: Writer, table: isize, run: isize, value: isize) -> Result[(), Error] {
+        let mut magnitude = if value < 0 {
+            -value
+        } else {
+            value
+        };
+        let mut length = 0;
+        while magnitude != 0 {
+            magnitude >>= 1;
+            length += 1;
+        }
+        if length > 11 {
+            return Result::Err(failure("excessive coefficient magnitude"))
+        }
+        self.symbol(table, (run << 4) | length)?;
+        if length > 0 {
+            self.emit(
+                if value < 0 {
+                    value - 1
+                } else {
+                    value
+                },
+                length,
+            )?;
+        }
+        Result::Ok(())
+    }
+
+    fn block(self: Writer, block: Vec[i32], table: isize, previous: isize) -> Result[isize, Error] {
+        forward_dct(block);
+        let quantization = self.quantization[table];
+        let dc = rounded_division(block[0].to_isize(), 8 * quantization[0]);
+        self.coefficient(2 * table, 0, dc - previous)?;
+        let mut run = 0;
+        for position in 1..64 {
+            let value = rounded_division(
+                block[self.order[position]].to_isize(),
+                8 * quantization[position],
+            );
+            if value == 0 {
+                run += 1;
+            } else {
+                while run >= 16 {
+                    self.symbol(2 * table + 1, 240)?;
+                    run -= 16;
+                }
+                self.coefficient(2 * table + 1, run, value)?;
+                run = 0;
+            }
+        }
+        if run > 0 {
+            self.symbol(2 * table + 1, 0)?;
+        }
+        Result::Ok(dc)
+    }
+
+    fn headers(self: Writer, width: isize, height: isize) -> Result[(), Error] {
+        self.marker(216)?;
+        self.marker(219)?;
+        self.word(132)?;
+        for index in 0..2 {
+            self.byte(index)?;
+            for value in self.quantization[index] {
+                self.byte(value)?;
+            }
+        }
+        self.marker(192)?;
+        self.word(17)?;
+        self.byte(8)?;
+        self.word(height)?;
+        self.word(width)?;
+        self.byte(3)?;
+        for index in 0..3 {
+            self.byte(index + 1)?;
+            self.byte(
+                if index == 0 {
+                    34
+                } else {
+                    17
+                },
+            )?;
+            self.byte(
+                if index == 0 {
+                    0
+                } else {
+                    1
+                },
+            )?;
+        }
+        self.marker(196)?;
+        self.word(418)?;
+        for index in 0..4 {
+            self.byte((index % 2) * 16 + index / 2)?;
+            for count in encoding_counts(index) {
+                self.byte(count)?;
+            }
+            for value in encoding_values(index) {
+                self.byte(value)?;
+            }
+        }
+        self.marker(218)?;
+        self.word(12)?;
+        self.byte(3)?;
+        for index in 0..3 {
+            self.byte(index + 1)?;
+            self.byte(
+                if index == 0 {
+                    0
+                } else {
+                    17
+                },
+            )?;
+        }
+        self.byte(0)?;
+        self.byte(63)?;
+        self.byte(0)
+    }
+}
+
+fn rounded_division(value: isize, divisor: isize) -> isize {
+    if value >= 0 {
+        (value + divisor / 2) / divisor
+    } else {
+        -((-value + divisor / 2) / divisor)
+    }
+}
+
+fn sample_block() -> Vec[i32] {
+    let result = Vec::with_capacity(64);
+    for _ in 0..64 {
+        result.push(0);
+    }
+    result
+}
+
+fn downsample(source: Vec[i32], destination: Vec[i32]) -> () {
+    for y in 0..8 {
+        for x in 0..8 {
+            let index = y * 32 + x * 2;
+            destination[y * 8 + x] = (source[index] + source[index + 1] + source[index + 16]
+                + source[index + 17]
+                + 2)
+                >> 2;
+        }
+    }
+}
+
+fn encode_image(image: Image, limits: Limits, quality: isize, background: u32) -> Result[
+    bytes::Bytes,
+    Error,
+] {
+    limits.check_image(image)?;
+    let width = image.bounds().width();
+    let height = image.bounds().height();
+    let writer = Writer::new(limits.max_output_bytes, quality);
+    writer.headers(width, height)?;
+    let pixels = image.pixels();
+    let block = sample_block();
+    let cb: Vec[i32] = Vec::with_capacity(256);
+    let cr: Vec[i32] = Vec::with_capacity(256);
+    for _ in 0..256 {
+        cb.push(0);
+        cr.push(0);
+    }
+    let bg_red = (background >> 24).to_isize();
+    let bg_green = ((background >> 16) & 255).to_isize();
+    let bg_blue = ((background >> 8) & 255).to_isize();
+    let mut dc_y = 0;
+    let mut dc_cb = 0;
+    let mut dc_cr = 0;
+    for my in 0..(height + 15) / 16 {
+        for mx in 0..(width + 15) / 16 {
+            for sub in 0..4 {
+                for y in 0..8 {
+                    for x in 0..8 {
+                        let local_x = (sub % 2) * 8 + x;
+                        let local_y = (sub / 2) * 8 + y;
+                        let source_x = mx * 16 + local_x;
+                        let source_y = my * 16 + local_y;
+                        let sx = if source_x >= width {
+                            width - 1
+                        } else {
+                            source_x
+                        };
+                        let sy = if source_y >= height {
+                            height - 1
+                        } else {
+                            source_y
+                        };
+                        let pixel = pixels[sy * width + sx];
+                        let inverse = 255 - pixel.alpha().to_isize();
+                        let red = pixel.red().to_isize() + (bg_red * inverse + 127) / 255;
+                        let green = pixel.green().to_isize() + (bg_green * inverse + 127) / 255;
+                        let blue = pixel.blue().to_isize() + (bg_blue * inverse + 127) / 255;
+                        block[y * 8 + x] = ((19595 * red + 38470 * green + 7471 * blue + 32768)
+                            >> 16).to_i32();
+                        cb[local_y * 16 + local_x] = clamp(
+                            (-11056 * red - 21712 * green + 32768 * blue + 8421376) >> 16,
+                        ).to_i32();
+                        cr[local_y * 16 + local_x] = clamp(
+                            (32768 * red - 27440 * green - 5328 * blue + 8421376) >> 16,
+                        ).to_i32();
+                    }
+                }
+                dc_y = writer.block(block, 0, dc_y)?;
+            }
+            downsample(cb, block);
+            dc_cb = writer.block(block, 1, dc_cb)?;
+            downsample(cr, block);
+            dc_cr = writer.block(block, 1, dc_cr)?;
+        }
+    }
+    if writer.available.get() > 0 {
+        let padding = 8 - writer.available.get();
+        writer.emit((1 << padding) - 1, padding)?;
+    }
+    writer.marker(217)?;
+    Result::Ok(writer.data)
+}
