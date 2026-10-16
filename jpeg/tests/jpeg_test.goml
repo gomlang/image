@@ -1,0 +1,239 @@
+package tests;
+
+use ecosystem::image::{Image, Rect, Codec};
+use ecosystem::image::jpeg;
+use ecosystem::image::codecs::{Limits};
+use ecosystem::color::{Rgba8};
+use std::bytes;
+use std::fs;
+use std::hash::crc32;
+use std::testing;
+
+fn fixture(name: string) -> bytes::Bytes {
+    testing::expect_ok(fs::read_bytes_structured("jpeg/tests/data/" + name), "JPEG fixture")
+}
+
+fn pixel(red: u8, green: u8, blue: u8, alpha: u8) -> Rgba8 {
+    testing::expect_ok(Rgba8::new(red, green, blue, alpha), "pixel")
+}
+
+fn checksum(image: Image) -> u32 {
+    let raw = bytes::Bytes::with_capacity(image.len() * 4);
+    for p in image.pixels() {
+        raw.push(p.red());
+        raw.push(p.green());
+        raw.push(p.blue());
+        raw.push(p.alpha());
+    }
+    crc32::checksum(raw.as_slice(), crc32::Table::new(crc32::IEEE))
+}
+
+#[test]
+fn baseline_progressive_sampling_and_refinement_match_reference_pixels() -> () {
+    let cases = Vec::from_array(
+        [
+            ("video-001.221212.jpeg", 4116275521.to_u32()),
+            ("video-001.cmyk.jpeg", 1663927271.to_u32()),
+            ("video-001.progressive.truncated.jpeg", 2262440944.to_u32()),
+            ("video-001.q50.410.jpeg", 3881060220.to_u32()),
+            ("video-001.q50.410.progressive.jpeg", 3881060220.to_u32()),
+            ("video-001.q50.411.jpeg", 210315753.to_u32()),
+            ("video-001.q50.411.progressive.jpeg", 210315753.to_u32()),
+            ("video-001.q50.420.jpeg", 1665435978.to_u32()),
+            ("video-001.q50.420.progressive.jpeg", 1665435978.to_u32()),
+            ("video-001.q50.422.jpeg", 3998171827.to_u32()),
+            ("video-001.q50.422.progressive.jpeg", 3998171827.to_u32()),
+            ("video-001.q50.440.jpeg", 2156771800.to_u32()),
+            ("video-001.q50.440.progressive.jpeg", 2156771800.to_u32()),
+            ("video-001.q50.444.jpeg", 2815464351.to_u32()),
+            ("video-001.q50.444.progressive.jpeg", 2815464351.to_u32()),
+            ("video-001.separate.dc.progression.progressive.jpeg", 1316021003.to_u32()),
+            ("video-005.gray.q50.2x2.jpeg", 2290206840.to_u32()),
+            ("video-005.gray.q50.2x2.progressive.jpeg", 2290206840.to_u32()),
+            ("video-005.gray.q50.jpeg", 2290206840.to_u32()),
+            ("video-005.gray.q50.progressive.jpeg", 2290206840.to_u32()),
+        ],
+    );
+    for entry in cases {
+        let decoded = testing::expect_ok(jpeg::decode(fixture(entry.0)), entry.0);
+        testing::assert_eq(checksum(decoded), entry.1);
+        testing::assert_eq(decoded.bounds().min_x(), 0);
+        testing::assert_eq(decoded.bounds().min_y(), 0);
+    }
+}
+
+#[test]
+fn decodes_rgb_cmyk_and_ycck_color_models() -> () {
+    let cases = Vec::from_array(
+        [
+            ("rgb.jpg", pixel(32, 96, 160, 255)),
+            ("cmyk.jpg", pixel(31, 62, 125, 255)),
+            ("ycck.jpg", pixel(125, 125, 125, 255)),
+        ],
+    );
+    for entry in cases {
+        let decoded = testing::expect_ok(jpeg::decode(fixture(entry.0)), entry.0);
+        testing::assert_eq(decoded.len(), 64);
+        for p in decoded.pixels() {
+            testing::assert_eq(p, entry.1);
+        }
+    }
+}
+
+#[test]
+fn scan_quantization_tables_and_restart_predictors_are_independent() -> () {
+    for name in Vec::from_array(["quantization-change.jpg", "quantization-wide.jpg", "restart.jpg"]) {
+        let decoded = testing::expect_ok(jpeg::decode(fixture(name)), name);
+        let length = if name == "restart.jpg" {
+            128
+        } else {
+            64
+        };
+        testing::assert_eq(decoded.len(), length);
+        for p in decoded.pixels() {
+            testing::assert_eq(p, pixel(64, 64, 64, 255));
+        }
+    }
+}
+
+fn encoding_source() -> Image {
+    let pixels = Vec::new();
+    for y in 0..17 {
+        for x in 0..19 {
+            let alpha = (x * 29 + y * 17) % 256;
+            let red = ((x * 13 + y * 31) % 256) * alpha / 255;
+            let green = ((x * 43 + y * 7) % 256) * alpha / 255;
+            let blue = ((x * 3 + y * 67) % 256) * alpha / 255;
+            pixels.push(pixel(red.to_u8(), green.to_u8(), blue.to_u8(), alpha.to_u8()));
+        }
+    }
+    let bounds = testing::expect_ok(Rect::new(-7, 13, 12, 30), "bounds");
+    testing::expect_ok(Image::from_pixels(bounds, pixels), "source")
+}
+
+#[test]
+fn quality_background_and_partial_mcus_match_reference_encoding() -> () {
+    let source = encoding_source();
+    for quality in Vec::from_array([1, 25, 85, 100]) {
+        let codec = testing::expect_ok(
+            jpeg::JpegCodec::new(Limits::standard(), quality, pixel(32, 96, 160, 255)),
+            "JPEG codec",
+        );
+        let actual = testing::expect_ok(codec.encode(source), "JPEG encoding");
+        let expected = fixture(f"encoded-{quality}.jpg");
+        assert_bytes(actual, expected);
+        let decoded = testing::expect_ok(jpeg::decode(actual), "encoded JPEG");
+        testing::assert_eq(decoded.bounds().width(), 19);
+        testing::assert_eq(decoded.bounds().height(), 17);
+    }
+}
+
+#[test]
+fn input_output_and_decoded_budgets_include_boundaries() -> () {
+    let source = encoding_source();
+    let encoded = fixture("encoded-85.jpg");
+    let limits = Limits {
+        max_input_bytes: encoded.len(),
+        max_output_bytes: encoded.len(),
+        max_dimension: 19,
+        max_pixels: 323,
+        max_decoded_bytes: 1292,
+        ..Limits::standard(),
+    };
+    let codec = testing::expect_ok(
+        jpeg::JpegCodec::new(limits, 85, pixel(32, 96, 160, 255)),
+        "codec",
+    );
+    assert_bytes(testing::expect_ok(codec.encode(source), "exact output budget"), encoded);
+    testing::assert_ok(codec.decode(encoded));
+    for smaller in Vec::from_array(
+        [
+            Limits { max_input_bytes: encoded.len() - 1, ..limits },
+            Limits { max_dimension: 18, ..limits },
+            Limits { max_pixels: 322, ..limits },
+            Limits { max_decoded_bytes: 1291, ..limits },
+        ],
+    ) {
+        testing::assert_err(jpeg::decode_with_limits(encoded, smaller));
+    }
+    let bounded = testing::expect_ok(
+        jpeg::JpegCodec::new(
+            Limits { max_output_bytes: encoded.len() - 1, ..limits },
+            85,
+            pixel(32, 96, 160, 255),
+        ),
+        "bounded",
+    );
+    testing::assert_err(bounded.encode(source));
+}
+
+fn marker_offset(data: bytes::Bytes, marker: u8) -> isize {
+    for index in 0..data.len() - 1 {
+        if data.get(index) == 255 && data.get(index + 1) == marker {
+            return index
+        }
+    }
+    testing::fail("missing fixture marker");
+    0
+}
+
+#[test]
+fn malformed_tables_scans_restarts_and_unsupported_modes_are_errors() -> () {
+    let original = fixture("rgb.jpg");
+    for length in 0..original.len() {
+        let truncated = original.copy();
+        truncated.truncate(length);
+        testing::assert_err(jpeg::decode(truncated));
+    }
+    let quantization = original.copy();
+    quantization.set(marker_offset(quantization, 219) + 5, 0);
+    testing::assert_err(jpeg::decode(quantization));
+    let huffman = original.copy();
+    huffman.set(marker_offset(huffman, 196) + 5, 255);
+    testing::assert_err(jpeg::decode(huffman));
+    let selector = original.copy();
+    selector.set(marker_offset(selector, 218) + 6, 255);
+    testing::assert_err(jpeg::decode(selector));
+    let repeated = original.copy();
+    let scan = marker_offset(repeated, 218);
+    repeated.set(scan + 7, repeated.get(scan + 5));
+    testing::assert_err(jpeg::decode(repeated));
+    for mode in Vec::from_array([193, 195, 201]) {
+        let unsupported = original.copy();
+        let frame = marker_offset(unsupported, 192);
+        if mode == 193 {
+            unsupported.set(frame + 4, 12);
+        } else {
+            unsupported.set(frame + 1, mode.to_u8());
+        }
+        testing::assert_err(jpeg::decode(unsupported));
+    }
+    let restart = fixture("restart.jpg");
+    restart.set(marker_offset(restart, 208) + 1, 209);
+    testing::assert_err(jpeg::decode(restart));
+    let missing_adobe = fixture("cmyk.jpg");
+    missing_adobe.set(6, 0);
+    testing::assert_err(jpeg::decode(missing_adobe));
+    let progressive = fixture("video-001.q50.420.progressive.jpeg");
+    let first_scan = marker_offset(progressive, 218);
+    let components = progressive.get(first_scan + 4).to_isize();
+    progressive.set(first_scan + 7 + 2 * components, 32);
+    testing::assert_err(jpeg::decode(progressive));
+}
+
+#[test]
+fn completed_datastream_allows_trailing_container_bytes() -> () {
+    let input = fixture("rgb.jpg");
+    let expected = testing::expect_ok(jpeg::decode(input), "source");
+    input.push(0);
+    input.push(255);
+    let actual = testing::expect_ok(jpeg::decode(input), "framed JPEG");
+    testing::assert(actual.pixels() == expected.pixels());
+}
+
+fn assert_bytes(actual: bytes::Bytes, expected: bytes::Bytes) -> () {
+    testing::assert_eq(actual.len(), expected.len());
+    for index in 0..actual.len() {
+        testing::assert_eq(actual.get(index), expected.get(index));
+    }
+}

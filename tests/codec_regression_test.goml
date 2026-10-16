@@ -1,0 +1,219 @@
+package tests;
+
+use ecosystem::image::{Image, Codec};
+use ecosystem::image::jpeg;
+use ecosystem::image::webp;
+use ecosystem::image::codecs::{Limits};
+use std::bytes;
+use std::testing;
+
+#[test]
+fn codec_prefixes_fail_without_partial_images() -> () {
+    for name in["solid.jpg", "progressive.jpg", "alpha.webp", "gray.webp"] {
+        let data = fixture(name);
+        for length in 0..data.len() / 2 {
+            let prefix = bytes::Bytes::from_slice_copy(data.slice(0, length));
+            if name == "solid.jpg" || name == "progressive.jpg" {
+                testing::assert_err(jpeg::decode(prefix));
+            } else {
+                testing::assert_err(webp::decode(prefix));
+            }
+        }
+    }
+}
+
+fn codec_set_u32(data: bytes::Bytes, offset: isize, value: isize) -> () {
+    for i in 0..4 {
+        data.set(offset + i, ((value >> (i * 8)) & 255).to_u8());
+    }
+}
+
+#[test]
+fn frame_headers_and_extended_canvas_cannot_hide_allocations() -> () {
+    let jpg = fixture("solid.jpg");
+    let mut changed = false;
+    for i in 0..jpg.len() - 9 {
+        if jpg.get(i) == 255 && jpg.get(i + 1) == 192 {
+            for j in 5..9 {
+                jpg.set(i + j, 255);
+            }
+            changed = true;
+            break;
+        }
+    }
+    testing::assert(changed);
+    testing::assert_err(jpeg::decode(jpg));
+    let original = fixture("alpha.webp");
+    let extended = bytes::Bytes::from_slice_copy(original.slice(0, 12));
+    extended.extend_from_slice(bytes::Bytes::from_string("VP8X").as_slice());
+    for value in[10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] {
+        extended.push(value.to_u8());
+    }
+    extended.extend_from_slice(original.slice(12, original.len()));
+    codec_set_u32(extended, 4, extended.len() - 8);
+    testing::assert_err(webp::decode(extended));
+    extended.set(24, 1);
+    extended.set(27, 1);
+    testing::assert_ok(webp::decode(extended));
+    extended.set(20, 2);
+    testing::assert_err(webp::decode(extended));
+    let duplicate = original.copy();
+    duplicate.extend_from_slice(original.slice(12, original.len()));
+    codec_set_u32(duplicate, 4, duplicate.len() - 8);
+    testing::assert_err(webp::decode(duplicate));
+    let bad_padding = bytes::Bytes::from_string("RIFF");
+    for value in[14, 0, 0, 0] {
+        bad_padding.push(value.to_u8());
+    }
+    bad_padding.extend_from_slice(bytes::Bytes::from_string("WEBPTEST").as_slice());
+    for value in[1, 0, 0, 0, 0, 1] {
+        bad_padding.push(value.to_u8());
+    }
+    testing::assert_err(webp::decode(bad_padding));
+}
+
+#[test]
+fn lossless_preserves_every_premultiplied_channel_and_alpha() -> () {
+    let pixels = Vec::with_capacity(65536);
+    for a in 0..256 {
+        for r in 0..256 {
+            pixels.push(
+                pixel(
+                    (if r < a {
+                        r
+                    } else {
+                        a
+                    }).to_u8(),
+                    (a / 2).to_u8(),
+                    a.to_u8(),
+                    a.to_u8(),
+                ),
+            );
+        }
+    }
+    let image = testing::expect_ok(Image::from_pixels(rect(0, 0, 256, 256), pixels), "source");
+    let codec = testing::expect_ok(webp::WebpCodec::new(Limits::standard(), 0), "speed codec");
+    let encoded = testing::expect_ok(codec.encode(image), "encode exhaustive channels");
+    let decoded = testing::expect_ok(codec.decode(encoded), "decode exhaustive channels");
+    testing::assert(decoded.pixels() == pixels);
+}
+
+#[test]
+fn independent_lossless_transform_fixtures_and_encoding_efforts() -> () {
+    for name in["gradient", "palette", "noise", "predictor"] {
+        let data = fixture("lossless-" + name + ".webp");
+        let raw = fixture("lossless-" + name + ".rgba");
+        let image = testing::expect_ok(webp::decode(data), name);
+        let pixels = image.pixels();
+        testing::assert_eq(pixels.len() * 4, raw.len());
+        for i in 0..pixels.len() {
+            let p = pixels[i];
+            testing::assert_eq(p.red(), raw.get(i * 4));
+            testing::assert_eq(p.green(), raw.get(i * 4 + 1));
+            testing::assert_eq(p.blue(), raw.get(i * 4 + 2));
+            testing::assert_eq(p.alpha(), raw.get(i * 4 + 3));
+        }
+        for effort in 0..7 {
+            let codec = testing::expect_ok(
+                webp::WebpCodec::new(Limits::standard(), effort),
+                "codec",
+            );
+            let encoded = testing::expect_ok(codec.encode(image), "encode");
+            let decoded = testing::expect_ok(codec.decode(encoded), "decode");
+            testing::assert(decoded.pixels() == image.pixels());
+        }
+    }
+}
+
+#[test]
+fn webp_alpha_filters_reconstruct_all_sample_positions() -> () {
+    let opaque = fixture("color.webp");
+    for filter in 0..4 {
+        let data = bytes::Bytes::from_string("RIFF");
+        for _ in 0..4 {
+            data.push(0);
+        }
+        data.extend_from_slice(bytes::Bytes::from_string("WEBPVP8X").as_slice());
+        for value in[10, 0, 0, 0, 16, 0, 0, 0, 7, 0, 0, 7, 0, 0] {
+            data.push(value.to_u8());
+        }
+        data.extend_from_slice(bytes::Bytes::from_string("ALPH").as_slice());
+        for value in[65, 0, 0, 0] {
+            data.push(value.to_u8());
+        }
+        data.push((filter << 2).to_u8());
+        for y in 0..8 {
+            for x in 0..8 {
+                let current = x * 11 + y * 13;
+                let prediction = if filter == 0 {
+                    0
+                } else if y == 0 {
+                    if x == 0 {
+                        0
+                    } else {
+                        current - 11
+                    }
+                } else if x == 0 || filter == 2 {
+                    current - 13
+                } else if filter == 1 {
+                    current - 11
+                } else {
+                    current
+                };
+                data.push(((current - prediction) & 255).to_u8());
+            }
+        }
+        data.push(0);
+        data.extend_from_slice(opaque.slice(12, opaque.len()));
+        codec_set_u32(data, 4, data.len() - 8);
+        let image = testing::expect_ok(webp::decode(data), "filtered alpha");
+        for y in 0..8 {
+            for x in 0..8 {
+                let alpha = x * 11 + y * 13;
+                let pixel = testing::expect_some(image.at(x, y), "alpha pixel");
+                testing::assert_eq(pixel.alpha(), alpha.to_u8());
+                close_channel(pixel.red(), (31 * alpha + 127) / 255, 1);
+                close_channel(pixel.green(), (96 * alpha + 127) / 255, 1);
+                close_channel(pixel.blue(), (160 * alpha + 127) / 255, 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn malformed_lossless_entropy_remains_recoverable() -> () {
+    let limits = Limits {
+        max_dimension: 32,
+        max_pixels: 1024,
+        max_decoded_bytes: 4096,
+        ..Limits::standard(),
+    };
+    let original = fixture("alpha.webp");
+    for i in 20..original.len() {
+        for bit in 0..8 {
+            let mutated = original.copy();
+            mutated.set(i, mutated.get(i) ^ (1 << bit).to_u8());
+            let _ = webp::decode_with_limits(mutated, limits);
+        }
+    }
+}
+
+#[test]
+fn lossy_webp_retains_precise_video_range_rounding() -> () {
+    for name in["lossy-rounding", "lossy-rounding-alpha"] {
+        let data = fixture(name + ".webp");
+        let raw = fixture(name + ".rgba");
+        let decoded = testing::expect_ok(webp::decode(data), "precise video range");
+        testing::assert_eq(decoded.bounds().width(), 17);
+        testing::assert_eq(decoded.bounds().height(), 19);
+        let pixels = decoded.pixels();
+        testing::assert_eq(pixels.len() * 4, raw.len());
+        for i in 0..pixels.len() {
+            let p = pixels[i];
+            testing::assert_eq(p.red(), raw.get(i * 4));
+            testing::assert_eq(p.green(), raw.get(i * 4 + 1));
+            testing::assert_eq(p.blue(), raw.get(i * 4 + 2));
+            testing::assert_eq(p.alpha(), raw.get(i * 4 + 3));
+        }
+    }
+}
