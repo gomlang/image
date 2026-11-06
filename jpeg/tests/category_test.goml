@@ -1,0 +1,95 @@
+package tests;
+
+use ecosystem::image::jpeg;
+use std::bytes;
+use std::testing;
+
+fn category_segment(wire: bytes::Bytes, marker: byte, payload: Vec[byte]) -> () {
+    wire.push(255);
+    wire.push(marker);
+    wire.push(((payload.len() + 2) >> 8).to_u8());
+    wire.push((payload.len() + 2).to_u8());
+    wire.extend_from_slice(payload.as_slice());
+}
+
+fn category_entropy(wire: bytes::Bytes, bits: string) -> () {
+    let mut data = bits;
+    while data.byte_len() % 8 != 0 {
+        data += "1";
+    }
+    for offset in 0..data.byte_len() / 8 {
+        let mut octet: byte = 0;
+        for index in 0..8 {
+            octet = (octet << 1) | (data.byte_get(offset * 8 + index) - b'0');
+        }
+        wire.push(octet);
+        if octet == 255 {
+            wire.push(0);
+        }
+    }
+}
+
+fn category_fixture(frame: byte, dc: isize, ac: isize) -> bytes::Bytes {
+    let wire = bytes::Bytes::from_vec(b"\xff\xd8");
+    let quantization = Vec::from_array([0.to_u8()]);
+    for _ in 0..64 {
+        quantization.push(1);
+    }
+    category_segment(wire, 219, quantization);
+    category_segment(wire, frame, Vec::from_array([8.to_u8(), 0, 1, 0, 1, 1, 1, 17, 0]));
+    let tables = Vec::from_array([0.to_u8(), 1]);
+    for _ in 0..15 {
+        tables.push(0);
+    }
+    tables.push(dc.to_u8());
+    tables.push(16);
+    tables.push(0);
+    tables.push(
+        if ac == 0 {
+            1
+        } else {
+            2
+        },
+    );
+    for _ in 0..14 {
+        tables.push(0);
+    }
+    tables.push(ac.to_u8());
+    if ac != 0 {
+        tables.push(0);
+    }
+    category_segment(wire, 196, tables);
+    let dc_bits = "0" + "1".repeat(dc);
+    let ac_bits = if ac == 0 {
+        "00"
+    } else {
+        "00" + "1".repeat(ac) + "01"
+    };
+    if frame == 194 {
+        category_segment(wire, 218, Vec::from_array([1.to_u8(), 1, 0, 0, 0, 0]));
+        category_entropy(wire, dc_bits);
+        category_segment(wire, 218, Vec::from_array([1.to_u8(), 1, 0, 1, 63, 0]));
+        category_entropy(wire, ac_bits);
+    } else {
+        category_segment(wire, 218, Vec::from_array([1.to_u8(), 1, 0, 0, 63, 0]));
+        category_entropy(wire, dc_bits + ac_bits);
+    }
+    wire.extend_from_slice(b"\xff\xd9".as_slice());
+    wire
+}
+
+#[test]
+fn eight_bit_jpeg_rejects_oversized_coefficient_categories() -> () {
+    // ITU-T T.81 F.1.2 Tables F.1/F.2: DC difference sizes 0..11, AC sizes 1..10.
+    for frame in[192.to_u8(), 193, 194] {
+        for (dc, ac) in[(0, 0), (11, 0), (0, 10)] {
+            testing::assert_ok(jpeg::decode(category_fixture(frame, dc, ac)));
+        }
+        for dc in 12..17 {
+            testing::assert_err(jpeg::decode(category_fixture(frame, dc, 0)));
+        }
+        for ac in 11..16 {
+            testing::assert_err(jpeg::decode(category_fixture(frame, 0, ac)));
+        }
+    }
+}

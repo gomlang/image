@@ -4,6 +4,9 @@
 JPEG decoding supports grayscale, RGB, YCbCr, CMYK and YCCK images, component
 subsampling and restart intervals. Arithmetic-coded, lossless and higher-bit-depth
 JPEG variants are not supported.
+For supported 8-bit frames, DC difference categories above 11 and AC magnitude
+categories above 10 are rejected before reading their additional bits, following
+[ITU-T T.81 Annex F](https://www.w3.org/Graphics/JPEG/itu-t81.pdf), Tables F.1/F.2.
 
 `decode(bytes)`, `decode_with_limits(bytes, codecs::Limits)` and `encode(image)`
 return the parent image package's `Result` and `Error` types. `JpegCodec`

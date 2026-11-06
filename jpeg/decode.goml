@@ -477,7 +477,7 @@ fn decode_block(
     }
     if start == 0 {
         let size = reader.symbol(dc_table)?;
-        if size > 16 {
+        if size > 11 {
             return Result::Err(failure("invalid DC category"))
         }
         prediction.set(prediction.get() + reader.signed_bits(size)?);
@@ -492,6 +492,9 @@ fn decode_block(
         let value = reader.symbol(ac_table)?;
         let run = value >> 4;
         let size = value & 15;
+        if size > 10 {
+            return Result::Err(failure("invalid AC category for 8-bit precision"))
+        }
         if size == 0 {
             if run == 15 {
                 position += 16;
